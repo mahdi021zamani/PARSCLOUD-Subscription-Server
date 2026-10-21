@@ -5,4 +5,4 @@ compatibility_date = "2026-10-22"
 [[d1_databases]]
 binding = "DB"
 database_name = "parscloud-subscriptions"
-database_id = "REPLACE_WITH_YOUR_D1_DATABASE_ID"
+database_id = "235d6883-d5e6-4ee2-b70a-af4a018e48d9"
