@@ -27,7 +27,10 @@ Cloudflare Worker + D1 API for managing PARSCLOUD app subscriptions.
 
 For local development, copy `.dev.vars.example` to `.dev.vars`, set a private `ADMIN_TOKEN`, then run `npm run dev`. Do not commit `.dev.vars`.
 
-## 2. API
+## 2. Cloudflare Git deployment
+The repository is connected to the `parscloud-subscription-server` Worker with `main` as the production branch. Cloudflare Builds uses `npm run deploy` as the deploy command, so commits pushed to `main` can trigger a deployment. Keep the `DB` D1 binding and `ADMIN_TOKEN` secret configured in the Worker settings; neither belongs in Git.
+
+## 3. API
 All request and response bodies are JSON. The API currently allows cross-origin requests for compatibility with mobile clients; admin routes still require the secret bearer token.
 
 - `GET /health` — health check.
@@ -39,12 +42,12 @@ All request and response bodies are JSON. The API currently allows cross-origin 
 
 Admin requests must include `Authorization: Bearer YOUR_ADMIN_TOKEN`.
 
-## 3. Important app integration notes
+## 4. Important app integration notes
 - The Android app must call `POST /v1/validate` before enabling VPN connection and must also stop an active connection when the server confirms expiry or revocation.
 - Do not embed `ADMIN_TOKEN` in the APK. Only the customer subscription key belongs on the client.
 - Treat network errors differently from an explicit `expired` or `revoked` result. A temporary outage must not rewrite the stored expiry or permanently lock a valid user. If you choose a short offline grace period, design it explicitly and test it; do not treat arbitrary failures as valid forever.
 - Client-side checks alone can be modified by a determined user. The server is the source of truth, but a fully tamper-resistant client requires additional app-side protections.
 - Back up the D1 data regularly and keep this Git repository private. Git stores source code, not a backup of the live database.
 
-## 4. Database migration
+## 5. Database migration
 The initial schema is in `schema.sql`. For future schema changes, add numbered SQL migrations and apply them to the remote D1 database before deploying code that depends on them.
