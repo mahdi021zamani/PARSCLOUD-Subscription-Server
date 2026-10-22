@@ -1,0 +1,29 @@
+name: Build Worker bundle
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  bundle:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install dependencies
+        run: npm install --no-package-lock
+      - name: Bundle Worker without deploying
+        run: npx wrangler deploy --dry-run --outdir dist
+      - name: Upload bundled Worker
+        uses: actions/upload-artifact@v4
+        with:
+          name: parscloud-worker-bundle
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
