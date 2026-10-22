@@ -1,0 +1,1 @@
+export const adminPage = '<!doctype html><html lang="fa" dir="rtl"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>PARSCLOUD</title><body><h1>پنل مدیریت PARSCLOUD</h1></body></html>';
