@@ -1,3 +1,5 @@
+import { adminPage } from "./admin";
+
 interface Env {
   DB: D1Database;
   ADMIN_TOKEN: string;
@@ -96,6 +98,10 @@ async function handle(request: Request, env: Env): Promise<Response> {
   if (request.method === "OPTIONS") return new Response(null, { status: 204 });
   if (request.method === "GET" && path === "/health") {
     return json({ ok: true, service: "parscloud-subscription-server", time: Date.now() });
+  }
+
+  if (request.method === "GET" && path === "/admin") {
+    return new Response(adminPage, { status: 200, headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "x-content-type-options": "nosniff", "referrer-policy": "no-referrer" } });
   }
 
   if (request.method === "POST" && path === "/v1/validate") {
