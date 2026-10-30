@@ -23,7 +23,8 @@ Cloudflare Worker + D1 API for managing PARSCLOUD app subscriptions.
    npm run deploy
    ```
 4. When prompted for `ADMIN_TOKEN`, enter a long random secret. Never commit it to GitHub or put it in the Android app.
-5. Note the deployed `workers.dev` URL.
+5. When prompted for `EMERGENCY_SOURCE_URL`, paste the complete emergency paid-panel subscription URL. This is a Cloudflare secret: it must never be committed to Git or placed in Android source code. The app retrieves the feed through `/v1/fallback-config` only when both primary feeds have no fresh usable configs.
+6. Note the deployed `workers.dev` URL.
 
 For local development, copy `.dev.vars.example` to `.dev.vars`, set a private `ADMIN_TOKEN`, then run `npm run dev`. Do not commit `.dev.vars`.
 
@@ -34,6 +35,7 @@ The repository is connected to the `parscloud-subscription-server` Worker with `
 All request and response bodies are JSON. The API currently allows cross-origin requests for compatibility with mobile clients; admin routes still require the secret bearer token.
 
 - `GET /health` — health check.
+- `GET /v1/fallback-config` — read-only emergency-feed proxy. The upstream credential-bearing URL is stored only in the Worker secret `EMERGENCY_SOURCE_URL`; the URL itself is never returned to the app.
 - `POST /v1/validate` — public subscription validation. Body: `{"subscriptionKey":"pc_..."}`
 - `POST /admin/subscriptions` — create a subscription. Admin bearer token required. Body: `{"customerLabel":"Customer","durationDays":30}` or `{"customerLabel":"Customer","expiresAt":"2026-12-01T00:00:00Z"}`. The raw subscription key is returned only at creation; save it securely and deliver it to the customer.
 - `GET /admin/subscriptions?limit=50` — list subscriptions (key itself is never returned).
