@@ -20,6 +20,7 @@ Cloudflare Worker + D1 API for managing PARSCLOUD app subscriptions.
    npx wrangler login
    npx wrangler d1 execute parscloud-subscriptions --remote --file=./schema.sql
    npx wrangler secret put ADMIN_TOKEN
+   npx wrangler secret put EMERGENCY_SOURCE_URL
    npm run deploy
    ```
 4. When prompted for `ADMIN_TOKEN`, enter a long random secret. Never commit it to GitHub or put it in the Android app.
