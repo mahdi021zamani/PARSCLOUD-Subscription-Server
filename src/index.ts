@@ -3,6 +3,8 @@ import { adminPage } from "./admin";
 interface Env {
   DB: D1Database;
   ADMIN_TOKEN: string;
+  /** Secret upstream paid-panel URL; never returned to clients. */
+  EMERGENCY_SOURCE_URL?: string;
 }
 
 type SubscriptionRow = {
@@ -98,6 +100,50 @@ async function handle(request: Request, env: Env): Promise<Response> {
   if (request.method === "OPTIONS") return new Response(null, { status: 204 });
   if (request.method === "GET" && path === "/health") {
     return json({ ok: true, service: "parscloud-subscription-server", time: Date.now() });
+  }
+
+  // Public, read-only emergency feed proxy. The credential-bearing upstream URL
+  // is stored as a Cloudflare Worker secret and is never included in the APK.
+  if (request.method === "GET" && path === "/v1/fallback-config") {
+    const configuredSource = env.EMERGENCY_SOURCE_URL?.trim();
+    if (!configuredSource) {
+      return json({ error: "Emergency source is not configured" }, 503);
+    }
+
+    let upstreamUrl: URL;
+    try {
+      upstreamUrl = new URL(configuredSource);
+    } catch {
+      return json({ error: "Emergency source configuration is invalid" }, 503);
+    }
+    if (upstreamUrl.protocol !== "https:") {
+      return json({ error: "Emergency source must use HTTPS" }, 503);
+    }
+
+    const upstream = await fetch(upstreamUrl.toString(), {
+      headers: { Accept: "text/plain, application/octet-stream;q=0.9, */*;q=0.1" },
+      redirect: "follow",
+    });
+    if (!upstream.ok) {
+      return json({ error: "Emergency source is temporarily unavailable" }, 502);
+    }
+
+    const body = await upstream.text();
+    if (!body.trim()) {
+      return json({ error: "Emergency source returned an empty feed" }, 502);
+    }
+    if (body.length > 1_000_000) {
+      return json({ error: "Emergency source response is too large" }, 502);
+    }
+
+    return new Response(body, {
+      status: 200,
+      headers: {
+        "content-type": "text/plain; charset=utf-8",
+        "cache-control": "no-store",
+        "x-content-type-options": "nosniff",
+      },
+    });
   }
 
   if (request.method === "GET" && path === "/admin") {
