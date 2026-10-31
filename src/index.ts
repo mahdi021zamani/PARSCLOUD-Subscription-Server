@@ -340,8 +340,8 @@ async function handle(request: Request, env: Env): Promise<Response> {
     const id = crypto.randomUUID();
     const now = Date.now();
     await env.DB.prepare(
-      "INSERT INTO subscriptions (id, key_hash, key_prefix, customer_label, status, created_at, updated_at, expires_at) VALUES (?, ?, ?, ?, 'active', ?, ?, ?)"
-    ).bind(id, await sha256Hex(rawKey), rawKey.slice(0, 11), customerLabel, now, now, expiresAt).run();
+      "INSERT INTO subscriptions (id, key_hash, key_prefix, customer_label, status, created_at, updated_at, expires_at, max_connections) VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?)"
+    ).bind(id, await sha256Hex(rawKey), rawKey.slice(0, 11), customerLabel, now, now, expiresAt, maxConnections).run();
 
     return json({
       created: true,
