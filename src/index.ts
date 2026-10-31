@@ -362,8 +362,8 @@ async function handle(request: Request, env: Env): Promise<Response> {
     const requestedLimit = Number(url.searchParams.get("limit") ?? "50");
     const limit = Number.isInteger(requestedLimit) ? Math.min(100, Math.max(1, requestedLimit)) : 50;
     const result = await env.DB.prepare(
-      "SELECT id, key_prefix, customer_label, status, created_at, updated_at, expires_at FROM subscriptions ORDER BY created_at DESC LIMIT ?"
-    ).bind(limit).all<SubscriptionRow>();
+      "SELECT id, key_prefix, customer_label, status, created_at, updated_at, expires_at, max_connections, (SELECT COUNT(*) FROM connection_sessions cs WHERE cs.subscription_id = subscriptions.id AND cs.lease_expires_at > ?) AS active_connections FROM subscriptions ORDER BY created_at DESC LIMIT ?"
+    ).bind(Date.now(), limit).all<SubscriptionRow & { active_connections: number }>();
     return json({
       subscriptions: (result.results ?? []).map((row) => ({
         id: row.id,
@@ -373,6 +373,8 @@ async function handle(request: Request, env: Env): Promise<Response> {
         createdAt: new Date(row.created_at).toISOString(),
         updatedAt: new Date(row.updated_at).toISOString(),
         expiresAt: new Date(row.expires_at).toISOString(),
+        maxConnections: row.max_connections,
+        activeConnections: row.active_connections,
       })),
     });
   }
