@@ -3,7 +3,8 @@
 Cloudflare Worker + D1 API for managing PARSCLOUD app subscriptions.
 
 ## Features in this starter
-- Create subscriptions with a customer label and expiry date.
+- Create subscriptions with a customer label, expiry date, and configurable concurrent-connection limit (1–100).
+- Enforce simultaneous connections with server-side 90-second renewable leases; the Android tunnel renews every 30 seconds.
 - Validate a subscription key from the app.
 - Renew or revoke subscriptions through an admin-only API.
 - Store only a SHA-256 hash of each subscription key in D1.
@@ -19,6 +20,8 @@ Cloudflare Worker + D1 API for managing PARSCLOUD app subscriptions.
    npm install
    npx wrangler login
    npx wrangler d1 execute parscloud-subscriptions --remote --file=./schema.sql
+   # For an existing production database, apply the incremental migration instead:
+   npx wrangler d1 execute parscloud-subscriptions --remote --file=./migrations/0002_connection_limits.sql
    npx wrangler secret put ADMIN_TOKEN
    npx wrangler secret put V2RAY_SOURCE_URL
    npx wrangler secret put AETHER_SOURCE_URL
@@ -41,9 +44,12 @@ API control responses use JSON; successful feed-proxy responses use plain text. 
 - `GET /v1/primary-feed/v2ray` — authenticated V2Ray primary-feed proxy. Requires `Authorization: Bearer pc_...` with an active customer subscription key; upstream URL is read only from `V2RAY_SOURCE_URL`.
 - `GET /v1/primary-feed/aether` — authenticated Aether primary-feed proxy. Requires the same active customer subscription key; upstream URL is read only from `AETHER_SOURCE_URL`.
 - `GET /v1/fallback-config` — authenticated emergency-feed proxy. The app should call it only after both primary feeds independently have no fresh usable configs. The upstream URL is stored only in the Worker secret `EMERGENCY_SOURCE_URL`.
-- `POST /v1/validate` — public subscription validation. Body: `{"subscriptionKey":"pc_..."}`
-- `POST /admin/subscriptions` — create a subscription. Admin bearer token required. Body: `{"customerLabel":"Customer","durationDays":30}` or `{"customerLabel":"Customer","expiresAt":"2026-12-01T00:00:00Z"}`. The raw subscription key is returned only at creation; save it securely and deliver it to the customer.
-- `GET /admin/subscriptions?limit=50` — list subscriptions (key itself is never returned).
+- `POST /v1/validate` — public subscription validation. Body: `{"subscriptionKey":"pc_..."}`. The response includes `maxConnections`.
+- `POST /v1/session/acquire` — atomically reserve one of the subscription's simultaneous-connection slots. Requires the customer bearer key and body `{"sessionId":"<installation-uuid>"}`.
+- `POST /v1/session/heartbeat` — renew the same connection lease; the lease expires after 90 seconds without renewal.
+- `POST /v1/session/release` — release the installation's slot on normal tunnel shutdown.
+- `POST /admin/subscriptions` — create a subscription. Admin bearer token required. Body: `{"customerLabel":"Customer","durationDays":30,"maxConnections":2}` or `{"customerLabel":"Customer","expiresAt":"2026-12-01T00:00:00Z","maxConnections":2}`. `maxConnections` is optional (defaults to 1) and must be an integer from 1 to 100. The raw subscription key is returned only at creation; save it securely and deliver it to the customer.
+- `GET /admin/subscriptions?limit=50` — list subscriptions with each connection limit and current unexpired lease count (key itself is never returned).
 - `POST /admin/subscriptions/:id/renew` — renew from the later of now or the current expiry. Body: `{"durationDays":30}`.
 - `POST /admin/subscriptions/:id/revoke` — revoke a subscription.
 
@@ -67,3 +73,12 @@ The initial schema is in `schema.sql`. For future schema changes, add numbered S
 - The emergency route rejects an empty response and returns an error instead; it is a recovery input, not an instruction to clear either primary group.
 - All three feed routes require an active customer subscription key in the Authorization bearer header. `ADMIN_TOKEN` is only for the admin API and must never be included in the APK.
 - The Worker never returns the upstream URLs to the client. The app should store only the customer's subscription key and use the public Worker endpoint.
+
+
+## 6. Concurrent connection limits
+
+The limit is the number of simultaneous tunnel installations, not the number of devices on which a customer may install the app. The default is one connection; administrators may set any integer from 1 to 100 when creating a subscription.
+
+The Worker allocates a unique slot per subscription and installation session. D1's unique slot constraint prevents two different sessions from taking the same slot concurrently. A lease lasts 90 seconds and is renewed by the app every 30 seconds while the tunnel service is alive. A normal stop releases the slot; a crash or force-stop leaves a lease that becomes reusable after it expires. The app stops its tunnel if the Worker explicitly denies renewal, or if it cannot renew before the lease safety deadline. As with all mobile background work, Android process termination and network loss mean this is lease-based enforcement, not a promise of instantaneous global disconnection.
+
+Apply `migrations/0002_connection_limits.sql` to an existing D1 database before deploying the Worker code in this branch. Existing subscriptions are migrated with a default limit of one. Do not apply `schema.sql` to an existing populated database; it is the complete schema for a fresh database.
