@@ -19,8 +19,9 @@ Cloudflare Worker + D1 API for managing PARSCLOUD app subscriptions.
    ```sh
    npm install
    npx wrangler login
+   # Fresh D1 database only:
    npx wrangler d1 execute parscloud-subscriptions --remote --file=./schema.sql
-   # For an existing production database, apply the incremental migration instead:
+   # Existing D1 database only (do NOT also run schema.sql):
    npx wrangler d1 execute parscloud-subscriptions --remote --file=./migrations/0002_connection_limits.sql
    npx wrangler secret put ADMIN_TOKEN
    npx wrangler secret put V2RAY_SOURCE_URL
