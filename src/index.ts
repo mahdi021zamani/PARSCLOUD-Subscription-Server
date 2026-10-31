@@ -17,6 +17,7 @@ type SubscriptionRow = {
   created_at: number;
   updated_at: number;
   expires_at: number;
+  max_connections: number;
 };
 
 const json = (data: unknown, status = 200): Response =>
@@ -100,7 +101,7 @@ function publicStatus(row: SubscriptionRow, now: number) {
 async function requireActiveSubscription(
   request: Request,
   env: Env,
-): Promise<{ authorized: true } | { authorized: false; response: Response }> {
+): Promise<{ authorized: true; subscription: SubscriptionRow } | { authorized: false; response: Response }> {
   const authorization = request.headers.get("authorization") ?? "";
   const key = authorization.startsWith("Bearer ") ? authorization.slice(7) : "";
   if (!/^pc_[a-f0-9]{64}$/.test(key)) {
@@ -112,7 +113,7 @@ async function requireActiveSubscription(
 
   const keyHash = await sha256Hex(key);
   const row = await env.DB.prepare(
-    "SELECT id, key_prefix, customer_label, status, created_at, updated_at, expires_at FROM subscriptions WHERE key_hash = ? LIMIT 1"
+    "SELECT id, key_prefix, customer_label, status, created_at, updated_at, expires_at, max_connections FROM subscriptions WHERE key_hash = ? LIMIT 1"
   ).bind(keyHash).first<SubscriptionRow>();
 
   if (!row) {
@@ -134,7 +135,70 @@ async function requireActiveSubscription(
     };
   }
 
-  return { authorized: true };
+  return { authorized: true, subscription: row };
+}
+
+
+const SESSION_LEASE_MS = 90_000;
+const isSessionId = (value: unknown): value is string =>
+  typeof value === "string" && /^[a-f0-9-]{36}$/i.test(value);
+
+async function acquireConnection(
+  subscription: SubscriptionRow,
+  sessionId: string,
+  env: Env,
+): Promise<{ acquired: boolean; activeConnections: number }> {
+  const now = Date.now();
+  const leaseUntil = now + SESSION_LEASE_MS;
+  const existing = await env.DB.prepare(
+    "SELECT slot_number FROM connection_sessions WHERE subscription_id = ? AND session_id = ? LIMIT 1"
+  ).bind(subscription.id, sessionId).first<{ slot_number: number }>();
+
+  let slotAcquired = false;
+  if (existing) {
+    const refreshed = await env.DB.prepare(
+      "UPDATE connection_sessions SET lease_expires_at = ?, last_seen_at = ? WHERE subscription_id = ? AND slot_number = ? AND session_id = ?"
+    ).bind(leaseUntil, now, subscription.id, existing.slot_number, sessionId).run();
+    slotAcquired = refreshed.meta.changes > 0;
+  }
+  if (!slotAcquired) {
+    for (let slot = 1; slot <= subscription.max_connections; slot += 1) {
+      let result: D1Result | undefined;
+      try {
+        result = await env.DB.prepare(
+          "INSERT INTO connection_sessions (subscription_id, slot_number, session_id, lease_expires_at, last_seen_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(subscription_id, slot_number) DO UPDATE SET session_id = excluded.session_id, lease_expires_at = excluded.lease_expires_at, last_seen_at = excluded.last_seen_at WHERE connection_sessions.lease_expires_at <= ? OR connection_sessions.session_id = ?"
+        ).bind(subscription.id, slot, sessionId, leaseUntil, now, now, sessionId).run();
+      } catch (error) {
+        // Two acquire/heartbeat requests for the same installation can race after
+        // both observed no existing row. If the other request inserted first, the
+        // unique (subscription_id, session_id) constraint fires; refresh that row
+        // instead of turning a harmless duplicate request into an HTTP 500.
+        const raced = await env.DB.prepare(
+          "SELECT slot_number FROM connection_sessions WHERE subscription_id = ? AND session_id = ? LIMIT 1"
+        ).bind(subscription.id, sessionId).first<{ slot_number: number }>();
+        if (!raced) throw error;
+        const refreshed = await env.DB.prepare(
+          "UPDATE connection_sessions SET lease_expires_at = ?, last_seen_at = ? WHERE subscription_id = ? AND slot_number = ? AND session_id = ?"
+        ).bind(leaseUntil, now, subscription.id, raced.slot_number, sessionId).run();
+        if (refreshed.meta.changes > 0) {
+          slotAcquired = true;
+          break;
+        }
+      }
+      if (result && result.meta.changes > 0) {
+        slotAcquired = true;
+        break;
+      }
+    }
+  }
+
+  const owned = await env.DB.prepare(
+    "SELECT COUNT(*) AS count FROM connection_sessions WHERE subscription_id = ? AND session_id = ? AND lease_expires_at > ?"
+  ).bind(subscription.id, sessionId, now).first<{ count: number }>();
+  const active = await env.DB.prepare(
+    "SELECT COUNT(*) AS count FROM connection_sessions WHERE subscription_id = ? AND lease_expires_at > ?"
+  ).bind(subscription.id, now).first<{ count: number }>();
+  return { acquired: (owned?.count ?? 0) > 0, activeConnections: active?.count ?? 0 };
 }
 
 async function proxyPrivateFeed(
@@ -215,6 +279,27 @@ async function handle(request: Request, env: Env): Promise<Response> {
   }
 
   const primaryFeedMatch = path.match(/^\/v1\/primary-feed\/(v2ray|aether)$/);
+
+  if (request.method === "POST" && (path === "/v1/session/acquire" || path === "/v1/session/heartbeat")) {
+    const authorization = await requireActiveSubscription(request, env);
+    if (!authorization.authorized) return authorization.response;
+    const body = await readJson(request);
+    if (!isSessionId(body?.sessionId)) return json({ error: "A valid sessionId is required" }, 400);
+    const result = await acquireConnection(authorization.subscription, body.sessionId, env);
+    if (!result.acquired) return json({ acquired: false, limit: authorization.subscription.max_connections, activeConnections: result.activeConnections, message: "Connection limit reached" }, 429);
+    return json({ acquired: true, limit: authorization.subscription.max_connections, activeConnections: result.activeConnections, leaseSeconds: SESSION_LEASE_MS / 1000 });
+  }
+
+  if (request.method === "POST" && path === "/v1/session/release") {
+    const authorization = await requireActiveSubscription(request, env);
+    if (!authorization.authorized) return authorization.response;
+    const body = await readJson(request);
+    if (!isSessionId(body?.sessionId)) return json({ error: "A valid sessionId is required" }, 400);
+    await env.DB.prepare("DELETE FROM connection_sessions WHERE subscription_id = ? AND session_id = ?")
+      .bind(authorization.subscription.id, body.sessionId).run();
+    return json({ released: true });
+  }
+
   if (request.method === "GET" && primaryFeedMatch) {
     const authorization = await requireActiveSubscription(request, env);
     if (!authorization.authorized) return authorization.response;
@@ -245,7 +330,7 @@ async function handle(request: Request, env: Env): Promise<Response> {
     }
     const keyHash = await sha256Hex(key);
     const row = await env.DB.prepare(
-      "SELECT id, key_prefix, customer_label, status, created_at, updated_at, expires_at FROM subscriptions WHERE key_hash = ? LIMIT 1"
+      "SELECT id, key_prefix, customer_label, status, created_at, updated_at, expires_at, max_connections FROM subscriptions WHERE key_hash = ? LIMIT 1"
     ).bind(keyHash).first<SubscriptionRow>();
 
     if (!row) return json({ valid: false, status: "invalid" }, 200);
@@ -256,6 +341,7 @@ async function handle(request: Request, env: Env): Promise<Response> {
       subscriptionId: row.id,
       expiresAt: new Date(row.expires_at).toISOString(),
       serverTime: new Date().toISOString(),
+      maxConnections: row.max_connections,
     });
   }
 
@@ -267,6 +353,10 @@ async function handle(request: Request, env: Env): Promise<Response> {
     if (!body) return json({ error: "Expected a JSON object" }, 400);
     const customerLabel = cleanLabel(body.customerLabel);
     const expiresAt = expiryFromBody(body, Date.now());
+    const maxConnections = body.maxConnections === undefined ? 1 : body.maxConnections;
+    if (!Number.isInteger(maxConnections) || (maxConnections as number) < 1 || (maxConnections as number) > 100) {
+      return json({ error: "maxConnections must be an integer from 1 to 100" }, 400);
+    }
     if (!customerLabel || expiresAt === null) {
       return json({ error: "Provide customerLabel and either durationDays (1-3650) or a future expiresAt date" }, 400);
     }
@@ -275,8 +365,8 @@ async function handle(request: Request, env: Env): Promise<Response> {
     const id = crypto.randomUUID();
     const now = Date.now();
     await env.DB.prepare(
-      "INSERT INTO subscriptions (id, key_hash, key_prefix, customer_label, status, created_at, updated_at, expires_at) VALUES (?, ?, ?, ?, 'active', ?, ?, ?)"
-    ).bind(id, await sha256Hex(rawKey), rawKey.slice(0, 11), customerLabel, now, now, expiresAt).run();
+      "INSERT INTO subscriptions (id, key_hash, key_prefix, customer_label, status, created_at, updated_at, expires_at, max_connections) VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?)"
+    ).bind(id, await sha256Hex(rawKey), rawKey.slice(0, 11), customerLabel, now, now, expiresAt, maxConnections).run();
 
     return json({
       created: true,
@@ -286,6 +376,7 @@ async function handle(request: Request, env: Env): Promise<Response> {
         status: "active",
         createdAt: new Date(now).toISOString(),
         expiresAt: new Date(expiresAt).toISOString(),
+        maxConnections,
         subscriptionKey: rawKey,
       },
       warning: "Save this subscription key now. It cannot be retrieved later.",
@@ -296,8 +387,8 @@ async function handle(request: Request, env: Env): Promise<Response> {
     const requestedLimit = Number(url.searchParams.get("limit") ?? "50");
     const limit = Number.isInteger(requestedLimit) ? Math.min(100, Math.max(1, requestedLimit)) : 50;
     const result = await env.DB.prepare(
-      "SELECT id, key_prefix, customer_label, status, created_at, updated_at, expires_at FROM subscriptions ORDER BY created_at DESC LIMIT ?"
-    ).bind(limit).all<SubscriptionRow>();
+      "SELECT id, key_prefix, customer_label, status, created_at, updated_at, expires_at, max_connections, (SELECT COUNT(*) FROM connection_sessions cs WHERE cs.subscription_id = subscriptions.id AND cs.lease_expires_at > ?) AS active_connections FROM subscriptions ORDER BY created_at DESC LIMIT ?"
+    ).bind(Date.now(), limit).all<SubscriptionRow & { active_connections: number }>();
     return json({
       subscriptions: (result.results ?? []).map((row) => ({
         id: row.id,
@@ -307,6 +398,8 @@ async function handle(request: Request, env: Env): Promise<Response> {
         createdAt: new Date(row.created_at).toISOString(),
         updatedAt: new Date(row.updated_at).toISOString(),
         expiresAt: new Date(row.expires_at).toISOString(),
+        maxConnections: row.max_connections,
+        activeConnections: row.active_connections,
       })),
     });
   }

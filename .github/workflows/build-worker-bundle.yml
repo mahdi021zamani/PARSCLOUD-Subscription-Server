@@ -1,6 +1,11 @@
 name: Build Worker bundle
 
 on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - feature/concurrent-connection-limits
   workflow_dispatch:
 
 permissions:
