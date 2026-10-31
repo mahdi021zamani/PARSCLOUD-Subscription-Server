@@ -143,16 +143,16 @@ async function proxyPrivateFeed(
   allowEmpty: boolean,
 ): Promise<Response> {
   const source = configuredSource?.trim();
-  if (!source) return json({ error: \`\${label} source is not configured\` }, 503);
+  if (!source) return json({ error: `${label} source is not configured` }, 503);
 
   let upstreamUrl: URL;
   try {
     upstreamUrl = new URL(source);
   } catch {
-    return json({ error: \`\${label} source configuration is invalid\` }, 503);
+    return json({ error: `${label} source configuration is invalid` }, 503);
   }
   if (upstreamUrl.protocol !== "https:") {
-    return json({ error: \`\${label} source must use HTTPS\` }, 503);
+    return json({ error: `${label} source must use HTTPS` }, 503);
   }
 
   let upstream: Response;
@@ -162,19 +162,19 @@ async function proxyPrivateFeed(
       redirect: "follow",
     });
   } catch {
-    return json({ error: \`\${label} source is temporarily unavailable\` }, 502);
+    return json({ error: `${label} source is temporarily unavailable` }, 502);
   }
 
   if (!upstream.ok) {
-    return json({ error: \`\${label} source is temporarily unavailable\` }, 502);
+    return json({ error: `${label} source is temporarily unavailable` }, 502);
   }
   if (upstream.url) {
     try {
       if (new URL(upstream.url).protocol !== "https:") {
-        return json({ error: \`\${label} source redirect is not HTTPS\` }, 502);
+        return json({ error: `${label} source redirect is not HTTPS` }, 502);
       }
     } catch {
-      return json({ error: \`\${label} source redirect is invalid\` }, 502);
+      return json({ error: `${label} source redirect is invalid` }, 502);
     }
   }
 
@@ -182,13 +182,13 @@ async function proxyPrivateFeed(
   try {
     body = await upstream.text();
   } catch {
-    return json({ error: \`\${label} source response could not be read\` }, 502);
+    return json({ error: `${label} source response could not be read` }, 502);
   }
   if (body.length > 1_000_000) {
-    return json({ error: \`\${label} source response is too large\` }, 502);
+    return json({ error: `${label} source response is too large` }, 502);
   }
   if (!allowEmpty && !body.trim()) {
-    return json({ error: \`\${label} source returned an empty feed\` }, 502);
+    return json({ error: `${label} source returned an empty feed` }, 502);
   }
 
   // For primary feeds, HTTP success with an empty body is deliberately preserved as
