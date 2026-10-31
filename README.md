@@ -22,11 +22,12 @@ Cloudflare Worker + D1 API for managing PARSCLOUD app subscriptions.
    npx wrangler secret put ADMIN_TOKEN
    npx wrangler secret put V2RAY_SOURCE_URL
    npx wrangler secret put AETHER_SOURCE_URL
+   npx wrangler secret put AETHER_GITHUB_TOKEN
    npx wrangler secret put EMERGENCY_SOURCE_URL
    npm run deploy
    ```
 4. When prompted for `ADMIN_TOKEN`, enter a long random secret. Never commit it to GitHub or put it in the Android app.
-5. Configure `V2RAY_SOURCE_URL` and `AETHER_SOURCE_URL` as Cloudflare Worker secrets, using the complete HTTPS subscription URLs for the two primary feeds. Configure `EMERGENCY_SOURCE_URL` with the complete HTTPS emergency paid-panel subscription URL. These are secrets: never commit them to Git or place them in Android source code.
+5. Configure `V2RAY_SOURCE_URL` as the complete HTTPS V2Ray feed URL and `EMERGENCY_SOURCE_URL` as the complete HTTPS emergency paid-panel feed URL. For the private Aether file, set `AETHER_SOURCE_URL` to `https://api.github.com/repos/mahdi021zamani/parscloud-sub/contents/Aether?ref=main` and set `AETHER_GITHUB_TOKEN` to the fine-grained GitHub token restricted to this repository with **Contents: Read-only**. Store both as Cloudflare Worker secrets. Never put the GitHub token in a URL, Git, Android source code, or chat.
 6. Note the deployed `workers.dev` URL. The Worker URL is public; the upstream panel/feed URLs and the admin token are not.
 
 For local development, copy `.dev.vars.example` to `.dev.vars`, set a private `ADMIN_TOKEN`, then run `npm run dev`. Do not commit `.dev.vars`.
@@ -39,7 +40,7 @@ API control responses use JSON; successful feed-proxy responses use plain text. 
 
 - `GET /health` — health check.
 - `GET /v1/primary-feed/v2ray` — authenticated V2Ray primary-feed proxy. Requires `Authorization: Bearer pc_...` with an active customer subscription key; upstream URL is read only from `V2RAY_SOURCE_URL`.
-- `GET /v1/primary-feed/aether` — authenticated Aether primary-feed proxy. Requires the same active customer subscription key; upstream URL is read only from `AETHER_SOURCE_URL`.
+- `GET /v1/primary-feed/aether` — authenticated Aether primary-feed proxy. Requires the same active customer subscription key; reads the private `Aether` file from the pinned GitHub Contents API URL in `AETHER_SOURCE_URL`, using `AETHER_GITHUB_TOKEN` server-side. The GitHub credential is never returned to the app and redirects are not followed.
 - `GET /v1/fallback-config` — authenticated emergency-feed proxy. The app should call it only after both primary feeds independently have no fresh usable configs. The upstream URL is stored only in the Worker secret `EMERGENCY_SOURCE_URL`.
 - `POST /v1/validate` — public subscription validation. Body: `{"subscriptionKey":"pc_..."}`
 - `POST /admin/subscriptions` — create a subscription. Admin bearer token required. Body: `{"customerLabel":"Customer","durationDays":30}` or `{"customerLabel":"Customer","expiresAt":"2026-12-01T00:00:00Z"}`. The raw subscription key is returned only at creation; save it securely and deliver it to the customer.
