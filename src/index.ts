@@ -289,7 +289,7 @@ async function proxyAetherGithubFeed(
 
   let body: string;
   try {
-    const binary = atob(file.content.replace(/\\s/g, ""));
+    const binary = atob(file.content.replace(/\s/g, ""));
     if (binary.length > 1_000_000 || binary.length !== file.size) {
       return json({ error: "Aether GitHub file size is invalid" }, 502);
     }
