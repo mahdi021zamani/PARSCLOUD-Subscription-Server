@@ -254,6 +254,27 @@ async function handle(request: Request, env: Env): Promise<Response> {
   }
 
   const primaryFeedMatch = path.match(/^\/v1\/primary-feed\/(v2ray|aether)$/);
+
+  if (request.method === "POST" && (path === "/v1/session/acquire" || path === "/v1/session/heartbeat")) {
+    const authorization = await requireActiveSubscription(request, env);
+    if (!authorization.authorized) return authorization.response;
+    const body = await readJson(request);
+    if (!isSessionId(body?.sessionId)) return json({ error: "A valid sessionId is required" }, 400);
+    const result = await acquireConnection(authorization.subscription, body.sessionId, env);
+    if (!result.acquired) return json({ acquired: false, limit: authorization.subscription.max_connections, activeConnections: result.activeConnections, message: "Connection limit reached" }, 429);
+    return json({ acquired: true, limit: authorization.subscription.max_connections, activeConnections: result.activeConnections, leaseSeconds: SESSION_LEASE_MS / 1000 });
+  }
+
+  if (request.method === "POST" && path === "/v1/session/release") {
+    const authorization = await requireActiveSubscription(request, env);
+    if (!authorization.authorized) return authorization.response;
+    const body = await readJson(request);
+    if (!isSessionId(body?.sessionId)) return json({ error: "A valid sessionId is required" }, 400);
+    await env.DB.prepare("DELETE FROM connection_sessions WHERE subscription_id = ? AND session_id = ?")
+      .bind(authorization.subscription.id, body.sessionId).run();
+    return json({ released: true });
+  }
+
   if (request.method === "GET" && primaryFeedMatch) {
     const authorization = await requireActiveSubscription(request, env);
     if (!authorization.authorized) return authorization.response;
