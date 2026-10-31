@@ -6,6 +6,8 @@ interface Env {
   /** Secret upstream paid-panel URLs; never returned to clients or stored in D1. */
   V2RAY_SOURCE_URL?: string;
   AETHER_SOURCE_URL?: string;
+  /** Fine-grained GitHub token with Contents: read on parscloud-sub only. */
+  AETHER_GITHUB_TOKEN?: string;
   EMERGENCY_SOURCE_URL?: string;
 }
 
@@ -205,6 +207,109 @@ async function proxyPrivateFeed(
   });
 }
 
+
+/**
+ * Reads the private Aether feed through GitHub's Contents API.
+ * The configured URL is pinned to the expected repository/file; credentials are
+ * sent only to api.github.com and redirects are not followed.
+ */
+async function proxyAetherGithubFeed(
+  configuredSource: string | undefined,
+  githubToken: string | undefined,
+): Promise<Response> {
+  const source = configuredSource?.trim();
+  const token = githubToken?.trim();
+  if (!source || !token) {
+    return json({ error: "Aether GitHub source is not configured" }, 503);
+  }
+
+  let upstreamUrl: URL;
+  try {
+    upstreamUrl = new URL(source);
+  } catch {
+    return json({ error: "Aether GitHub source configuration is invalid" }, 503);
+  }
+
+  if (
+    upstreamUrl.protocol !== "https:" ||
+    upstreamUrl.hostname !== "api.github.com" ||
+    upstreamUrl.pathname !== "/repos/mahdi021zamani/parscloud-sub/contents/Aether" ||
+    upstreamUrl.searchParams.get("ref") !== "main" ||
+    [...upstreamUrl.searchParams.keys()].some((key) => key !== "ref")
+  ) {
+    return json({ error: "Aether GitHub source must target the approved private feed" }, 503);
+  }
+
+  let upstream: Response;
+  try {
+    upstream = await fetch(upstreamUrl.toString(), {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+      },
+      redirect: "manual",
+    });
+  } catch {
+    return json({ error: "Aether GitHub source is temporarily unavailable" }, 502);
+  }
+
+  // Never follow a redirect with the private-repository credential.
+  if (upstream.status !== 200) {
+    return json({ error: "Aether GitHub source is temporarily unavailable" }, 502);
+  }
+
+  let payload: unknown;
+  try {
+    const responseText = await upstream.text();
+    if (responseText.length > 1_500_000) {
+      return json({ error: "Aether GitHub response is too large" }, 502);
+    }
+    payload = JSON.parse(responseText);
+  } catch {
+    return json({ error: "Aether GitHub response is invalid" }, 502);
+  }
+
+  if (!payload || typeof payload !== "object") {
+    return json({ error: "Aether GitHub file response is invalid" }, 502);
+  }
+  const file = payload as { type?: unknown; path?: unknown; encoding?: unknown; content?: unknown; size?: unknown };
+  if (
+    file.type !== "file" ||
+    file.path !== "Aether" ||
+    file.encoding !== "base64" ||
+    typeof file.content !== "string" ||
+    typeof file.size !== "number" ||
+    !Number.isInteger(file.size) ||
+    file.size < 0 ||
+    file.size > 1_000_000
+  ) {
+    return json({ error: "Aether GitHub file metadata is invalid" }, 502);
+  }
+
+  let body: string;
+  try {
+    const binary = atob(file.content.replace(/\\s/g, ""));
+    if (binary.length > 1_000_000 || binary.length !== file.size) {
+      return json({ error: "Aether GitHub file size is invalid" }, 502);
+    }
+    const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+    body = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    return json({ error: "Aether GitHub file encoding is invalid" }, 502);
+  }
+
+  // An empty file is an intentional empty primary feed and must clear only Aether.
+  return new Response(body, {
+    status: 200,
+    headers: {
+      "content-type": "text/plain; charset=utf-8",
+      "cache-control": "no-store",
+      "x-content-type-options": "nosniff",
+    },
+  });
+}
+
 async function handle(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
   const path = url.pathname.replace(/\/+$/, "") || "/";
@@ -219,10 +324,10 @@ async function handle(request: Request, env: Env): Promise<Response> {
     const authorization = await requireActiveSubscription(request, env);
     if (!authorization.authorized) return authorization.response;
 
-    const sourceUrl = primaryFeedMatch[1] === "v2ray"
-      ? env.V2RAY_SOURCE_URL
-      : env.AETHER_SOURCE_URL;
-    return proxyPrivateFeed(sourceUrl, primaryFeedMatch[1], true);
+    if (primaryFeedMatch[1] === "aether") {
+      return proxyAetherGithubFeed(env.AETHER_SOURCE_URL, env.AETHER_GITHUB_TOKEN);
+    }
+    return proxyPrivateFeed(env.V2RAY_SOURCE_URL, "v2ray", true);
   }
 
   // The emergency source is authenticated too. The app should request it only after
