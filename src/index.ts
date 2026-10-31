@@ -3,7 +3,9 @@ import { adminPage } from "./admin";
 interface Env {
   DB: D1Database;
   ADMIN_TOKEN: string;
-  /** Secret upstream paid-panel URL; never returned to clients. */
+  /** Secret upstream paid-panel URLs; never returned to clients or stored in D1. */
+  V2RAY_SOURCE_URL?: string;
+  AETHER_SOURCE_URL?: string;
   EMERGENCY_SOURCE_URL?: string;
 }
 
@@ -93,6 +95,114 @@ function publicStatus(row: SubscriptionRow, now: number) {
   return "active";
 }
 
+
+
+async function requireActiveSubscription(
+  request: Request,
+  env: Env,
+): Promise<{ authorized: true } | { authorized: false; response: Response }> {
+  const authorization = request.headers.get("authorization") ?? "";
+  const key = authorization.startsWith("Bearer ") ? authorization.slice(7) : "";
+  if (!/^pc_[a-f0-9]{64}$/.test(key)) {
+    return {
+      authorized: false,
+      response: json({ valid: false, status: "invalid" }, 401),
+    };
+  }
+
+  const keyHash = await sha256Hex(key);
+  const row = await env.DB.prepare(
+    "SELECT id, key_prefix, customer_label, status, created_at, updated_at, expires_at FROM subscriptions WHERE key_hash = ? LIMIT 1"
+  ).bind(keyHash).first<SubscriptionRow>();
+
+  if (!row) {
+    return {
+      authorized: false,
+      response: json({ valid: false, status: "invalid" }, 403),
+    };
+  }
+
+  const status = publicStatus(row, Date.now());
+  if (status !== "active") {
+    return {
+      authorized: false,
+      response: json({
+        valid: false,
+        status,
+        expiresAt: new Date(row.expires_at).toISOString(),
+      }, 403),
+    };
+  }
+
+  return { authorized: true };
+}
+
+async function proxyPrivateFeed(
+  configuredSource: string | undefined,
+  label: string,
+  allowEmpty: boolean,
+): Promise<Response> {
+  const source = configuredSource?.trim();
+  if (!source) return json({ error: \`\${label} source is not configured\` }, 503);
+
+  let upstreamUrl: URL;
+  try {
+    upstreamUrl = new URL(source);
+  } catch {
+    return json({ error: \`\${label} source configuration is invalid\` }, 503);
+  }
+  if (upstreamUrl.protocol !== "https:") {
+    return json({ error: \`\${label} source must use HTTPS\` }, 503);
+  }
+
+  let upstream: Response;
+  try {
+    upstream = await fetch(upstreamUrl.toString(), {
+      headers: { Accept: "text/plain, application/octet-stream;q=0.9, */*;q=0.1" },
+      redirect: "follow",
+    });
+  } catch {
+    return json({ error: \`\${label} source is temporarily unavailable\` }, 502);
+  }
+
+  if (!upstream.ok) {
+    return json({ error: \`\${label} source is temporarily unavailable\` }, 502);
+  }
+  if (upstream.url) {
+    try {
+      if (new URL(upstream.url).protocol !== "https:") {
+        return json({ error: \`\${label} source redirect is not HTTPS\` }, 502);
+      }
+    } catch {
+      return json({ error: \`\${label} source redirect is invalid\` }, 502);
+    }
+  }
+
+  let body: string;
+  try {
+    body = await upstream.text();
+  } catch {
+    return json({ error: \`\${label} source response could not be read\` }, 502);
+  }
+  if (body.length > 1_000_000) {
+    return json({ error: \`\${label} source response is too large\` }, 502);
+  }
+  if (!allowEmpty && !body.trim()) {
+    return json({ error: \`\${label} source returned an empty feed\` }, 502);
+  }
+
+  // For primary feeds, HTTP success with an empty body is deliberately preserved as
+  // HTTP 200 + empty text so the app can clear only that source's own group.
+  return new Response(body, {
+    status: 200,
+    headers: {
+      "content-type": "text/plain; charset=utf-8",
+      "cache-control": "no-store",
+      "x-content-type-options": "nosniff",
+    },
+  });
+}
+
 async function handle(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
   const path = url.pathname.replace(/\/+$/, "") || "/";
@@ -102,48 +212,23 @@ async function handle(request: Request, env: Env): Promise<Response> {
     return json({ ok: true, service: "parscloud-subscription-server", time: Date.now() });
   }
 
-  // Public, read-only emergency feed proxy. The credential-bearing upstream URL
-  // is stored as a Cloudflare Worker secret and is never included in the APK.
+  const primaryFeedMatch = path.match(/^\/v1\/primary-feed\/(v2ray|aether)$/);
+  if (request.method === "GET" && primaryFeedMatch) {
+    const authorization = await requireActiveSubscription(request, env);
+    if (!authorization.authorized) return authorization.response;
+
+    const sourceUrl = primaryFeedMatch[1] === "v2ray"
+      ? env.V2RAY_SOURCE_URL
+      : env.AETHER_SOURCE_URL;
+    return proxyPrivateFeed(sourceUrl, primaryFeedMatch[1], true);
+  }
+
+  // The emergency source is authenticated too. The app should request it only after
+  // both primary sources have independently failed their freshness/usability checks.
   if (request.method === "GET" && path === "/v1/fallback-config") {
-    const configuredSource = env.EMERGENCY_SOURCE_URL?.trim();
-    if (!configuredSource) {
-      return json({ error: "Emergency source is not configured" }, 503);
-    }
-
-    let upstreamUrl: URL;
-    try {
-      upstreamUrl = new URL(configuredSource);
-    } catch {
-      return json({ error: "Emergency source configuration is invalid" }, 503);
-    }
-    if (upstreamUrl.protocol !== "https:") {
-      return json({ error: "Emergency source must use HTTPS" }, 503);
-    }
-
-    const upstream = await fetch(upstreamUrl.toString(), {
-      headers: { Accept: "text/plain, application/octet-stream;q=0.9, */*;q=0.1" },
-      redirect: "follow",
-    });
-    if (!upstream.ok) {
-      return json({ error: "Emergency source is temporarily unavailable" }, 502);
-    }
-
-    const body = await upstream.text();
-    if (!body.trim()) {
-      return json({ error: "Emergency source returned an empty feed" }, 502);
-    }
-    if (body.length > 1_000_000) {
-      return json({ error: "Emergency source response is too large" }, 502);
-    }
-
-    return new Response(body, {
-      status: 200,
-      headers: {
-        "content-type": "text/plain; charset=utf-8",
-        "cache-control": "no-store",
-        "x-content-type-options": "nosniff",
-      },
-    });
+    const authorization = await requireActiveSubscription(request, env);
+    if (!authorization.authorized) return authorization.response;
+    return proxyPrivateFeed(env.EMERGENCY_SOURCE_URL, "Emergency", false);
   }
 
   if (request.method === "GET" && path === "/admin") {
