@@ -165,7 +165,9 @@ async function proxyPrivateFeed(
     return json({ error: `${label} source is temporarily unavailable` }, 502);
   }
 
-  if (!upstream.ok) {
+  // Reject partial-content and unusual success statuses: a truncated feed must never
+  // be interpreted as a complete replacement. 200 and 204 are the only accepted outcomes.
+  if (upstream.status !== 200 && upstream.status !== 204) {
     return json({ error: `${label} source is temporarily unavailable` }, 502);
   }
   if (upstream.url) {
