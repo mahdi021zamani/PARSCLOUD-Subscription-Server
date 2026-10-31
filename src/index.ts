@@ -163,10 +163,29 @@ async function acquireConnection(
   }
   if (!slotAcquired) {
     for (let slot = 1; slot <= subscription.max_connections; slot += 1) {
-      const result = await env.DB.prepare(
-        "INSERT INTO connection_sessions (subscription_id, slot_number, session_id, lease_expires_at, last_seen_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT DO UPDATE SET session_id = excluded.session_id, lease_expires_at = excluded.lease_expires_at, last_seen_at = excluded.last_seen_at WHERE connection_sessions.lease_expires_at <= ? OR connection_sessions.session_id = ?"
-      ).bind(subscription.id, slot, sessionId, leaseUntil, now, now, sessionId).run();
-      if (result.meta.changes > 0) {
+      let result: D1Result | undefined;
+      try {
+        result = await env.DB.prepare(
+          "INSERT INTO connection_sessions (subscription_id, slot_number, session_id, lease_expires_at, last_seen_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(subscription_id, slot_number) DO UPDATE SET session_id = excluded.session_id, lease_expires_at = excluded.lease_expires_at, last_seen_at = excluded.last_seen_at WHERE connection_sessions.lease_expires_at <= ? OR connection_sessions.session_id = ?"
+        ).bind(subscription.id, slot, sessionId, leaseUntil, now, now, sessionId).run();
+      } catch (error) {
+        // Two acquire/heartbeat requests for the same installation can race after
+        // both observed no existing row. If the other request inserted first, the
+        // unique (subscription_id, session_id) constraint fires; refresh that row
+        // instead of turning a harmless duplicate request into an HTTP 500.
+        const raced = await env.DB.prepare(
+          "SELECT slot_number FROM connection_sessions WHERE subscription_id = ? AND session_id = ? LIMIT 1"
+        ).bind(subscription.id, sessionId).first<{ slot_number: number }>();
+        if (!raced) throw error;
+        const refreshed = await env.DB.prepare(
+          "UPDATE connection_sessions SET lease_expires_at = ?, last_seen_at = ? WHERE subscription_id = ? AND slot_number = ? AND session_id = ?"
+        ).bind(leaseUntil, now, subscription.id, raced.slot_number, sessionId).run();
+        if (refreshed.meta.changes > 0) {
+          slotAcquired = true;
+          break;
+        }
+      }
+      if (result && result.meta.changes > 0) {
         slotAcquired = true;
         break;
       }
