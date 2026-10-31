@@ -35,7 +35,7 @@ For local development, copy `.dev.vars.example` to `.dev.vars`, set a private `A
 The repository is connected to the `parscloud-subscription-server` Worker with `main` as the production branch. Cloudflare Builds uses `npm run deploy` as the deploy command, so commits pushed to `main` can trigger a deployment. Keep the `DB` D1 binding and `ADMIN_TOKEN` secret configured in the Worker settings; neither belongs in Git.
 
 ## 3. API
-All request and response bodies are JSON. The API currently allows cross-origin requests for compatibility with mobile clients; admin routes still require the secret bearer token.
+API control responses use JSON; successful feed-proxy responses use plain text. The API currently allows cross-origin requests for compatibility with mobile clients; admin routes still require the secret bearer token.
 
 - `GET /health` — health check.
 - `GET /v1/primary-feed/v2ray` — authenticated V2Ray primary-feed proxy. Requires `Authorization: Bearer pc_...` with an active customer subscription key; upstream URL is read only from `V2RAY_SOURCE_URL`.
@@ -62,8 +62,8 @@ The initial schema is in `schema.sql`. For future schema changes, add numbered S
 
 ### Feed proxy outcome contract
 
-- The two primary routes return HTTP 200 with the upstream text body for any successful upstream 2xx response, including a zero-byte body. This lets the app distinguish an intentional empty primary feed from an upstream/transport failure.
-- A primary upstream HTTP error, transport error, invalid HTTPS configuration, or oversized response becomes a non-2xx Worker response. The app must preserve that source's last-known-good profiles.
+- The two primary routes return HTTP 200 with the upstream text body only when the upstream returns HTTP 200 or 204, including a zero-byte body. This lets the app distinguish an intentional empty primary feed from an upstream/transport failure.
+- A primary upstream HTTP error, partial-content response, transport error, invalid HTTPS configuration, or oversized response becomes a non-2xx Worker response. The app must preserve that source's last-known-good profiles.
 - The emergency route rejects an empty response and returns an error instead; it is a recovery input, not an instruction to clear either primary group.
 - All three feed routes require an active customer subscription key in the Authorization bearer header. `ADMIN_TOKEN` is only for the admin API and must never be included in the APK.
 - The Worker never returns the upstream URLs to the client. The app should store only the customer's subscription key and use the public Worker endpoint.
