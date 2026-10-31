@@ -305,7 +305,7 @@ async function handle(request: Request, env: Env): Promise<Response> {
     }
     const keyHash = await sha256Hex(key);
     const row = await env.DB.prepare(
-      "SELECT id, key_prefix, customer_label, status, created_at, updated_at, expires_at FROM subscriptions WHERE key_hash = ? LIMIT 1"
+      "SELECT id, key_prefix, customer_label, status, created_at, updated_at, expires_at, max_connections FROM subscriptions WHERE key_hash = ? LIMIT 1"
     ).bind(keyHash).first<SubscriptionRow>();
 
     if (!row) return json({ valid: false, status: "invalid" }, 200);
@@ -316,6 +316,7 @@ async function handle(request: Request, env: Env): Promise<Response> {
       subscriptionId: row.id,
       expiresAt: new Date(row.expires_at).toISOString(),
       serverTime: new Date().toISOString(),
+      maxConnections: row.max_connections,
     });
   }
 
@@ -327,6 +328,10 @@ async function handle(request: Request, env: Env): Promise<Response> {
     if (!body) return json({ error: "Expected a JSON object" }, 400);
     const customerLabel = cleanLabel(body.customerLabel);
     const expiresAt = expiryFromBody(body, Date.now());
+    const maxConnections = body.maxConnections === undefined ? 1 : body.maxConnections;
+    if (!Number.isInteger(maxConnections) || (maxConnections as number) < 1 || (maxConnections as number) > 100) {
+      return json({ error: "maxConnections must be an integer from 1 to 100" }, 400);
+    }
     if (!customerLabel || expiresAt === null) {
       return json({ error: "Provide customerLabel and either durationDays (1-3650) or a future expiresAt date" }, 400);
     }
@@ -346,6 +351,7 @@ async function handle(request: Request, env: Env): Promise<Response> {
         status: "active",
         createdAt: new Date(now).toISOString(),
         expiresAt: new Date(expiresAt).toISOString(),
+        maxConnections,
         subscriptionKey: rawKey,
       },
       warning: "Save this subscription key now. It cannot be retrieved later.",
