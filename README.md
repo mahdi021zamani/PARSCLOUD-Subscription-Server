@@ -20,12 +20,14 @@ Cloudflare Worker + D1 API for managing PARSCLOUD app subscriptions.
    npx wrangler login
    npx wrangler d1 execute parscloud-subscriptions --remote --file=./schema.sql
    npx wrangler secret put ADMIN_TOKEN
+   npx wrangler secret put V2RAY_SOURCE_URL
+   npx wrangler secret put AETHER_SOURCE_URL
    npx wrangler secret put EMERGENCY_SOURCE_URL
    npm run deploy
    ```
 4. When prompted for `ADMIN_TOKEN`, enter a long random secret. Never commit it to GitHub or put it in the Android app.
-5. When prompted for `EMERGENCY_SOURCE_URL`, paste the complete emergency paid-panel subscription URL. This is a Cloudflare secret: it must never be committed to Git or placed in Android source code. The app retrieves the feed through `/v1/fallback-config` only when both primary feeds have no fresh usable configs.
-6. Note the deployed `workers.dev` URL.
+5. Configure `V2RAY_SOURCE_URL` and `AETHER_SOURCE_URL` as Cloudflare Worker secrets, using the complete HTTPS subscription URLs for the two primary feeds. Configure `EMERGENCY_SOURCE_URL` with the complete HTTPS emergency paid-panel subscription URL. These are secrets: never commit them to Git or place them in Android source code.
+6. Note the deployed `workers.dev` URL. The Worker URL is public; the upstream panel/feed URLs and the admin token are not.
 
 For local development, copy `.dev.vars.example` to `.dev.vars`, set a private `ADMIN_TOKEN`, then run `npm run dev`. Do not commit `.dev.vars`.
 
@@ -36,7 +38,9 @@ The repository is connected to the `parscloud-subscription-server` Worker with `
 All request and response bodies are JSON. The API currently allows cross-origin requests for compatibility with mobile clients; admin routes still require the secret bearer token.
 
 - `GET /health` — health check.
-- `GET /v1/fallback-config` — read-only emergency-feed proxy. The upstream credential-bearing URL is stored only in the Worker secret `EMERGENCY_SOURCE_URL`; the URL itself is never returned to the app.
+- `GET /v1/primary-feed/v2ray` — authenticated V2Ray primary-feed proxy. Requires `Authorization: Bearer pc_...` with an active customer subscription key; upstream URL is read only from `V2RAY_SOURCE_URL`.
+- `GET /v1/primary-feed/aether` — authenticated Aether primary-feed proxy. Requires the same active customer subscription key; upstream URL is read only from `AETHER_SOURCE_URL`.
+- `GET /v1/fallback-config` — authenticated emergency-feed proxy. The app should call it only after both primary feeds independently have no fresh usable configs. The upstream URL is stored only in the Worker secret `EMERGENCY_SOURCE_URL`.
 - `POST /v1/validate` — public subscription validation. Body: `{"subscriptionKey":"pc_..."}`
 - `POST /admin/subscriptions` — create a subscription. Admin bearer token required. Body: `{"customerLabel":"Customer","durationDays":30}` or `{"customerLabel":"Customer","expiresAt":"2026-12-01T00:00:00Z"}`. The raw subscription key is returned only at creation; save it securely and deliver it to the customer.
 - `GET /admin/subscriptions?limit=50` — list subscriptions (key itself is never returned).
@@ -54,3 +58,12 @@ Admin requests must include `Authorization: Bearer YOUR_ADMIN_TOKEN`.
 
 ## 5. Database migration
 The initial schema is in `schema.sql`. For future schema changes, add numbered SQL migrations and apply them to the remote D1 database before deploying code that depends on them.
+
+
+### Feed proxy outcome contract
+
+- The two primary routes return HTTP 200 with the upstream text body for any successful upstream 2xx response, including a zero-byte body. This lets the app distinguish an intentional empty primary feed from an upstream/transport failure.
+- A primary upstream HTTP error, transport error, invalid HTTPS configuration, or oversized response becomes a non-2xx Worker response. The app must preserve that source's last-known-good profiles.
+- The emergency route rejects an empty response and returns an error instead; it is a recovery input, not an instruction to clear either primary group.
+- All three feed routes require an active customer subscription key in the Authorization bearer header. `ADMIN_TOKEN` is only for the admin API and must never be included in the APK.
+- The Worker never returns the upstream URLs to the client. The app should store only the customer's subscription key and use the public Worker endpoint.
