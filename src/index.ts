@@ -138,6 +138,44 @@ async function requireActiveSubscription(
   return { authorized: true, subscription: row };
 }
 
+
+const SESSION_LEASE_MS = 90_000;
+const isSessionId = (value: unknown): value is string =>
+  typeof value === "string" && /^[a-f0-9-]{36}$/i.test(value);
+
+async function acquireConnection(
+  subscription: SubscriptionRow,
+  sessionId: string,
+  env: Env,
+): Promise<{ acquired: boolean; activeConnections: number }> {
+  const now = Date.now();
+  const leaseUntil = now + SESSION_LEASE_MS;
+  const existing = await env.DB.prepare(
+    "SELECT slot_number FROM connection_sessions WHERE subscription_id = ? AND session_id = ? LIMIT 1"
+  ).bind(subscription.id, sessionId).first<{ slot_number: number }>();
+
+  if (existing) {
+    await env.DB.prepare(
+      "UPDATE connection_sessions SET lease_expires_at = ?, last_seen_at = ? WHERE subscription_id = ? AND slot_number = ? AND session_id = ?"
+    ).bind(leaseUntil, now, subscription.id, existing.slot_number, sessionId).run();
+  } else {
+    for (let slot = 1; slot <= subscription.max_connections; slot += 1) {
+      const result = await env.DB.prepare(
+        "INSERT INTO connection_sessions (subscription_id, slot_number, session_id, lease_expires_at, last_seen_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(subscription_id, slot_number) DO UPDATE SET session_id = excluded.session_id, lease_expires_at = excluded.lease_expires_at, last_seen_at = excluded.last_seen_at WHERE connection_sessions.lease_expires_at <= ? OR connection_sessions.session_id = ?"
+      ).bind(subscription.id, slot, sessionId, leaseUntil, now, now, sessionId).run();
+      if (result.meta.changes > 0) break;
+    }
+  }
+
+  const owned = await env.DB.prepare(
+    "SELECT COUNT(*) AS count FROM connection_sessions WHERE subscription_id = ? AND session_id = ? AND lease_expires_at > ?"
+  ).bind(subscription.id, sessionId, now).first<{ count: number }>();
+  const active = await env.DB.prepare(
+    "SELECT COUNT(*) AS count FROM connection_sessions WHERE subscription_id = ? AND lease_expires_at > ?"
+  ).bind(subscription.id, now).first<{ count: number }>();
+  return { acquired: (owned?.count ?? 0) > 0, activeConnections: active?.count ?? 0 };
+}
+
 async function proxyPrivateFeed(
   configuredSource: string | undefined,
   label: string,
