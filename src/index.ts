@@ -164,7 +164,7 @@ async function acquireConnection(
   if (!slotAcquired) {
     for (let slot = 1; slot <= subscription.max_connections; slot += 1) {
       const result = await env.DB.prepare(
-        "INSERT INTO connection_sessions (subscription_id, slot_number, session_id, lease_expires_at, last_seen_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(subscription_id, slot_number) DO UPDATE SET session_id = excluded.session_id, lease_expires_at = excluded.lease_expires_at, last_seen_at = excluded.last_seen_at WHERE connection_sessions.lease_expires_at <= ? OR connection_sessions.session_id = ?"
+        "INSERT INTO connection_sessions (subscription_id, slot_number, session_id, lease_expires_at, last_seen_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT DO UPDATE SET session_id = excluded.session_id, lease_expires_at = excluded.lease_expires_at, last_seen_at = excluded.last_seen_at WHERE connection_sessions.lease_expires_at <= ? OR connection_sessions.session_id = ?"
       ).bind(subscription.id, slot, sessionId, leaseUntil, now, now, sessionId).run();
       if (result.meta.changes > 0) {
         slotAcquired = true;
