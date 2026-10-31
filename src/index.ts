@@ -17,6 +17,7 @@ type SubscriptionRow = {
   created_at: number;
   updated_at: number;
   expires_at: number;
+  max_connections: number;
 };
 
 const json = (data: unknown, status = 200): Response =>
@@ -100,7 +101,7 @@ function publicStatus(row: SubscriptionRow, now: number) {
 async function requireActiveSubscription(
   request: Request,
   env: Env,
-): Promise<{ authorized: true } | { authorized: false; response: Response }> {
+): Promise<{ authorized: true; subscription: SubscriptionRow } | { authorized: false; response: Response }> {
   const authorization = request.headers.get("authorization") ?? "";
   const key = authorization.startsWith("Bearer ") ? authorization.slice(7) : "";
   if (!/^pc_[a-f0-9]{64}$/.test(key)) {
@@ -112,7 +113,7 @@ async function requireActiveSubscription(
 
   const keyHash = await sha256Hex(key);
   const row = await env.DB.prepare(
-    "SELECT id, key_prefix, customer_label, status, created_at, updated_at, expires_at FROM subscriptions WHERE key_hash = ? LIMIT 1"
+    "SELECT id, key_prefix, customer_label, status, created_at, updated_at, expires_at, max_connections FROM subscriptions WHERE key_hash = ? LIMIT 1"
   ).bind(keyHash).first<SubscriptionRow>();
 
   if (!row) {
@@ -134,7 +135,7 @@ async function requireActiveSubscription(
     };
   }
 
-  return { authorized: true };
+  return { authorized: true, subscription: row };
 }
 
 async function proxyPrivateFeed(
