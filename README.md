@@ -21,8 +21,8 @@ Cloudflare Worker + D1 API for managing PARSCLOUD app subscriptions.
    ```sh
    npm install
    npx wrangler login
-   # For a brand-new database only, initialize it with schema.sql.
-   npx wrangler d1 execute parscloud-subscriptions --remote --file=./schema.sql
+   # Applies the additive migration chain to a new or existing database.
+   npx wrangler d1 migrations apply parscloud-subscriptions --remote
    npx wrangler secret put ADMIN_TOKEN
    npx wrangler secret put V2RAY_SOURCE_URL
    npx wrangler secret put AETHER_SOURCE_URL
@@ -64,7 +64,7 @@ Admin requests must include `Authorization: Bearer YOUR_ADMIN_TOKEN`.
 - Back up the D1 data regularly and keep this Git repository private. Git stores source code, not a backup of the live database.
 
 ## 5. Database migration
-The full fresh-install schema is in `schema.sql`. Existing production databases must use the additive migration in `migrations/0001_device_registration.sql`; it adds `max_devices` with a finite default of 5 for existing subscriptions and creates the device/challenge tables without deleting subscription data. Apply migrations to a test database first. Do not run the remote migration or deploy to production until the updated Android build has been tested and rollout is approved. Use `npx wrangler d1 migrations apply parscloud-subscriptions --local` for local testing; the remote command is `npx wrangler d1 migrations apply parscloud-subscriptions --remote` and must be run only during the approved production rollout.
+The numbered migration chain is the supported initialization and upgrade path. `0000_initial_schema.sql` creates the original subscriptions table only if it is absent; `0001_device_registration.sql` then adds `max_devices` with a finite default of 5 and creates the device/challenge tables. This safely handles both a new database and the existing database whose subscriptions table was created before migrations were introduced. `schema.sql` is the current full-schema reference snapshot; do not execute it before or after the numbered migration chain. Apply migrations to a test database first. Do not run the remote migration or deploy to production until the updated Android build has been tested and rollout is approved. Use `npx wrangler d1 migrations apply parscloud-subscriptions --local` for local testing; the remote command is `npx wrangler d1 migrations apply parscloud-subscriptions --remote` and must be run only during the approved production rollout.
 
 
 ### Feed proxy outcome contract
