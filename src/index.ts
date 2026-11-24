@@ -494,7 +494,7 @@ async function handle(request: Request, env: Env): Promise<Response> {
     });
   }
 
-  const devicesMatch = path.match(/^\/admin\/subscriptions\\/([0-9a-f-]{36})\\/devices$/i);
+  const devicesMatch = path.match(/^\/admin\/subscriptions\/([0-9a-f-]{36})\/devices$/i);
   if (request.method === "GET" && devicesMatch) {
     const subscriptionId = devicesMatch[1];
     const sub = await env.DB.prepare("SELECT id,max_devices FROM subscriptions WHERE id=? LIMIT 1").bind(subscriptionId).first<{id:string;max_devices:number}>();
@@ -504,13 +504,13 @@ async function handle(request: Request, env: Env): Promise<Response> {
     return json({maxDevices:sub.max_devices,registeredDevices:devices.filter(d=>d.revoked_at===null).length,devices:devices.map(d=>({id:d.id,fingerprint:d.public_key_hash.slice(0,12),createdAt:new Date(d.created_at).toISOString(),lastSeenAt:new Date(d.last_seen_at).toISOString(),revoked:d.revoked_at!==null,revokedAt:d.revoked_at===null?null:new Date(d.revoked_at).toISOString()}))});
   }
 
-  const deleteDeviceMatch = path.match(/^\/admin\/subscriptions\\/([0-9a-f-]{36})\\/devices\\/([0-9a-f-]{36})$/i);
+  const deleteDeviceMatch = path.match(/^\/admin\/subscriptions\/([0-9a-f-]{36})\/devices\/([0-9a-f-]{36})$/i);
   if (request.method === "DELETE" && deleteDeviceMatch) {
     const result=await env.DB.prepare("UPDATE subscription_devices SET revoked_at=? WHERE id=? AND subscription_id=? AND revoked_at IS NULL").bind(Date.now(),deleteDeviceMatch[2],deleteDeviceMatch[1]).run();
     if(!result.meta.changes)return json({error:"Active device not found"},404);
     return json({removed:true,deviceId:deleteDeviceMatch[2],freedSlot:true});
   }
-  const deviceLimitMatch = path.match(/^\/admin\/subscriptions\\/([0-9a-f-]{36})\\/device-limit$/i);
+  const deviceLimitMatch = path.match(/^\/admin\/subscriptions\/([0-9a-f-]{36})\/device-limit$/i);
   if (request.method === "POST" && deviceLimitMatch) {
     const body = await readJson(request);
     const limit = maxDevices(body?.maxDevices);
