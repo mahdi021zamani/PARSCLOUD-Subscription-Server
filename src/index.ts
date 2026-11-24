@@ -510,6 +510,20 @@ async function handle(request: Request, env: Env): Promise<Response> {
     if(!result.meta.changes)return json({error:"Active device not found"},404);
     return json({removed:true,deviceId:deleteDeviceMatch[2],freedSlot:true});
   }
+  const deviceLimitMatch = path.match(/^\\/admin\\/subscriptions\\/([0-9a-f-]{36})\\/device-limit$/i);
+  if (request.method === "POST" && deviceLimitMatch) {
+    const body = await readJson(request);
+    const limit = maxDevices(body?.maxDevices);
+    if (limit === null) return json({ error: "maxDevices must be an integer from 1 to 100" }, 400);
+    const now = Date.now();
+    const result = await env.DB.prepare("UPDATE subscriptions SET max_devices = ?, updated_at = ? WHERE id = ?")
+      .bind(limit, now, deviceLimitMatch[1]).run();
+    if (!result.meta.changes) return json({ error: "Subscription not found" }, 404);
+    const count = await env.DB.prepare("SELECT COUNT(*) AS count FROM subscription_devices WHERE subscription_id = ? AND revoked_at IS NULL")
+      .bind(deviceLimitMatch[1]).first<{ count: number }>();
+    return json({ updated: true, maxDevices: limit, registeredDevices: count?.count ?? 0, newDevicesAllowed: Math.max(0, limit - (count?.count ?? 0)) });
+  }
+
 
   const renewMatch = path.match(/^\/admin\/subscriptions\/([0-9a-f-]{36})\/renew$/i);
   if (request.method === "POST" && renewMatch) {
