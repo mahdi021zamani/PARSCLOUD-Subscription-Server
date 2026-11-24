@@ -2,3 +2,4 @@
 ADMIN_TOKEN=replace-with-a-long-random-secret
 V2RAY_SOURCE_URL=replace-with-private-https-v2ray-subscription-url
 AETHER_SOURCE_URL=replace-with-private-https-aether-subscription-url
+DEVICE_LIMITS_ENFORCED=false
