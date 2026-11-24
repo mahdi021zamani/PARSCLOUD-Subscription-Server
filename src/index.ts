@@ -8,7 +8,7 @@ interface Env {
   AETHER_SOURCE_URL?: string;
   /** Fine-grained GitHub token with Contents: read on parscloud-sub only. */
   AETHER_GITHUB_TOKEN?: string;
-  EMERGENCY_SOURCE_URL?: string;
+  DEVICE_LIMITS_ENFORCED?: string;
 }
 
 type SubscriptionRow = {
@@ -19,6 +19,7 @@ type SubscriptionRow = {
   created_at: number;
   updated_at: number;
   expires_at: number;
+  max_devices: number;
 };
 
 const json = (data: unknown, status = 200): Response =>
@@ -74,6 +75,10 @@ function cleanLabel(value: unknown): string | null {
   const label = value.trim();
   if (!label || label.length > 120) return null;
   return label;
+}
+
+function maxDevices(value: unknown): number | null {
+  return typeof value === "number" && Number.isInteger(value) && value >= 1 && value <= 100 ? value : null;
 }
 
 function durationDays(value: unknown): number | null {
@@ -310,6 +315,76 @@ async function proxyAetherGithubFeed(
   });
 }
 
+type DeviceChallengeRow = { id:string; public_key_hash:string; challenge:string; expires_at:number; used_at:number|null };
+type DeviceRow = { id:string; public_key_hash:string; created_at:number; last_seen_at:number; revoked_at:number|null };
+
+function decodeBase64(value:string):Uint8Array {
+  const normalized=value.replace(/-/g,"+").replace(/_/g,"/");
+  const binary=atob(normalized+"=".repeat((4-normalized.length%4)%4));
+  return Uint8Array.from(binary,c=>c.charCodeAt(0));
+}
+function ecdsaDerToRaw(der:Uint8Array):Uint8Array|null {
+  try {
+    let p=0;
+    if(der[p++]!==0x30)return null;
+    let seq=der[p++];
+    if(seq&0x80){const n=seq&0x7f;if(n<1||n>2)return null;seq=0;for(let i=0;i<n;i++)seq=(seq<<8)|der[p++];}
+    if(p+seq!==der.length||der[p++]!==0x02)return null;
+    const rl=der[p++],r=der.slice(p,p+rl);p+=rl;
+    if(der[p++]!==0x02)return null;
+    const sl=der[p++],sv=der.slice(p,p+sl);
+    const norm=(v:Uint8Array)=>{while(v.length>32&&v[0]===0)v=v.slice(1);if(v.length>32)return null;const o=new Uint8Array(32);o.set(v,32-v.length);return o;};
+    const rr=norm(r),ss=norm(sv);if(!rr||!ss)return null;
+    const out=new Uint8Array(64);out.set(rr);out.set(ss,32);return out;
+  } catch { return null; }
+}
+async function verifyDeviceProof(publicKey:string,challenge:string,signature:string):Promise<boolean>{
+  try{
+    const sig=ecdsaDerToRaw(decodeBase64(signature));if(!sig)return false;
+    const key=await crypto.subtle.importKey("spki",decodeBase64(publicKey),{name:"ECDSA",namedCurve:"P-256"},false,["verify"]);
+    return await crypto.subtle.verify({name:"ECDSA",hash:"SHA-256"},key,sig,new TextEncoder().encode(challenge));
+  }catch{return false;}
+}
+async function issueDeviceChallenge(request:Request,env:Env):Promise<Response>{
+  const body=await readJson(request),key=body?.subscriptionKey,publicKey=body?.devicePublicKey;
+  if(typeof key!=="string"||!/^pc_[a-f0-9]{64}$/.test(key)||typeof publicKey!=="string"||publicKey.length<80||publicKey.length>2048)
+    return json({valid:false,status:"invalid_device_request"},400);
+  const keyHash=await sha256Hex(key);
+  const sub=await env.DB.prepare("SELECT id,status,expires_at FROM subscriptions WHERE key_hash=? LIMIT 1").bind(keyHash).first<{id:string;status:string;expires_at:number}>();
+  if(!sub||sub.status!=="active"||sub.expires_at<=Date.now())return json({valid:false,status:sub?.status==="revoked"?"revoked":"expired"},403);
+  try{await crypto.subtle.importKey("spki",decodeBase64(publicKey),{name:"ECDSA",namedCurve:"P-256"},false,["verify"]);}
+  catch{return json({valid:false,status:"invalid_device_key"},400);}
+  const now=Date.now(),challenge=randomHex(32),challengeId=crypto.randomUUID(),expiresAt=now+300000;
+  await env.DB.batch([
+    env.DB.prepare("DELETE FROM device_challenges WHERE expires_at<=? OR created_at<?").bind(now,now-86400000),
+    env.DB.prepare("INSERT INTO device_challenges (id,subscription_id,public_key_hash,challenge,created_at,expires_at) VALUES (?,?,?,?,?,?)").bind(challengeId,sub.id,await sha256Hex(publicKey),challenge,now,expiresAt)
+  ]);
+  return json({challengeId,challenge,expiresAt:new Date(expiresAt).toISOString(),serverTime:new Date(now).toISOString()});
+}
+async function registerDevice(env:Env,subscriptionId:string,publicKey:string,challengeId:string,signature:string):Promise<{ok:true;deviceCount:number;maxDevices:number}|{ok:false;status:string;deviceCount?:number;maxDevices?:number}>{
+  if(publicKey.length<80||publicKey.length>2048||challengeId.length>64||signature.length>512)return{ok:false,status:"invalid_device_proof"};
+  const publicKeyHash=await sha256Hex(publicKey),now=Date.now();
+  const challenge=await env.DB.prepare("SELECT id,public_key_hash,challenge,expires_at,used_at FROM device_challenges WHERE id=? AND subscription_id=? LIMIT 1").bind(challengeId,subscriptionId).first<DeviceChallengeRow>();
+  if(!challenge||challenge.used_at!==null||challenge.expires_at<=now||challenge.public_key_hash!==publicKeyHash)return{ok:false,status:"invalid_device_proof"};
+  if(!(await verifyDeviceProof(publicKey,challenge.challenge,signature)))return{ok:false,status:"invalid_device_proof"};
+  const id=crypto.randomUUID();
+  const results=await env.DB.batch([
+    env.DB.prepare("UPDATE device_challenges SET used_at=? WHERE id=? AND subscription_id=? AND public_key_hash=? AND used_at IS NULL AND expires_at>?").bind(now,challengeId,subscriptionId,publicKeyHash,now),
+    env.DB.prepare("UPDATE subscription_devices SET last_seen_at=? WHERE subscription_id=? AND public_key_hash=? AND revoked_at IS NULL AND EXISTS (SELECT 1 FROM device_challenges WHERE id=? AND used_at=?)").bind(now,subscriptionId,publicKeyHash,challengeId,now),
+    env.DB.prepare("INSERT INTO subscription_devices (id,subscription_id,public_key_hash,public_key,created_at,last_seen_at) SELECT ?,?,?,?,?,? WHERE EXISTS (SELECT 1 FROM device_challenges WHERE id=? AND used_at=?) AND NOT EXISTS (SELECT 1 FROM subscription_devices WHERE subscription_id=? AND public_key_hash=?) AND (SELECT COUNT(*) FROM subscription_devices WHERE subscription_id=? AND revoked_at IS NULL)<(SELECT max_devices FROM subscriptions WHERE id=? AND status='active' AND expires_at>?)").bind(id,subscriptionId,publicKeyHash,publicKey,now,now,challengeId,now,subscriptionId,publicKeyHash,subscriptionId,subscriptionId,now)
+  ]);
+  if(!results[0]?.meta?.changes)return{ok:false,status:"invalid_device_proof"};
+  const device=await env.DB.prepare("SELECT id,public_key_hash,created_at,last_seen_at,revoked_at FROM subscription_devices WHERE subscription_id=? AND public_key_hash=? LIMIT 1").bind(subscriptionId,publicKeyHash).first<DeviceRow>();
+  const sub=await env.DB.prepare("SELECT max_devices FROM subscriptions WHERE id=? LIMIT 1").bind(subscriptionId).first<{max_devices:number}>();
+  const max=sub?.max_devices??1;
+  if(device&&device.revoked_at!==null)return{ok:false,status:"device_revoked",deviceCount:0,maxDevices:max};
+  const countRow=await env.DB.prepare("SELECT COUNT(*) AS count FROM subscription_devices WHERE subscription_id=? AND revoked_at IS NULL").bind(subscriptionId).first<{count:number}>();
+  const count=countRow?.count??0;
+  if(device)return{ok:true,deviceCount:count,maxDevices:max};
+  if(count>=max)return{ok:false,status:"device_limit",deviceCount:count,maxDevices:max};
+  return{ok:false,status:"device_registration_failed",deviceCount:count,maxDevices:max};
+}
+
 async function handle(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
   const path = url.pathname.replace(/\/+$/, "") || "/";
@@ -330,17 +405,11 @@ async function handle(request: Request, env: Env): Promise<Response> {
     return proxyPrivateFeed(env.V2RAY_SOURCE_URL, "v2ray", true);
   }
 
-  // The emergency source is authenticated too. The app should request it only after
-  // both primary sources have independently failed their freshness/usability checks.
-  if (request.method === "GET" && path === "/v1/fallback-config") {
-    const authorization = await requireActiveSubscription(request, env);
-    if (!authorization.authorized) return authorization.response;
-    return proxyPrivateFeed(env.EMERGENCY_SOURCE_URL, "Emergency", false);
-  }
-
   if (request.method === "GET" && path === "/admin") {
     return new Response(adminPage, { status: 200, headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "x-content-type-options": "nosniff", "referrer-policy": "no-referrer" } });
   }
+
+  if (request.method === "POST" && path === "/v1/device-challenge") return issueDeviceChallenge(request, env);
 
   if (request.method === "POST" && path === "/v1/validate") {
     const body = await readJson(request);
@@ -350,18 +419,22 @@ async function handle(request: Request, env: Env): Promise<Response> {
     }
     const keyHash = await sha256Hex(key);
     const row = await env.DB.prepare(
-      "SELECT id, key_prefix, customer_label, status, created_at, updated_at, expires_at FROM subscriptions WHERE key_hash = ? LIMIT 1"
+      "SELECT id, key_prefix, customer_label, status, created_at, updated_at, expires_at, max_devices FROM subscriptions WHERE key_hash = ? LIMIT 1"
     ).bind(keyHash).first<SubscriptionRow>();
-
     if (!row) return json({ valid: false, status: "invalid" }, 200);
     const status = publicStatus(row, Date.now());
-    return json({
-      valid: status === "active",
-      status,
-      subscriptionId: row.id,
-      expiresAt: new Date(row.expires_at).toISOString(),
-      serverTime: new Date().toISOString(),
-    });
+    if (status !== "active") return json({ valid: false, status, subscriptionId: row.id, expiresAt: new Date(row.expires_at).toISOString(), serverTime: new Date().toISOString() });
+
+    const publicKey=body?.devicePublicKey, challengeId=body?.challengeId, signature=body?.signature;
+    const hasProof=publicKey!==undefined||challengeId!==undefined||signature!==undefined;
+    if(!hasProof){
+      if(env.DEVICE_LIMITS_ENFORCED==="true")return json({valid:false,status:"device_required"},403);
+      return json({valid:true,status:"active",subscriptionId:row.id,expiresAt:new Date(row.expires_at).toISOString(),serverTime:new Date().toISOString(),deviceLimitsEnforced:false});
+    }
+    if(typeof publicKey!=="string"||typeof challengeId!=="string"||typeof signature!=="string")return json({valid:false,status:"invalid_device_proof"},400);
+    const registration=await registerDevice(env,row.id,publicKey,challengeId,signature);
+    if(!registration.ok)return json({valid:false,status:registration.status,deviceCount:registration.deviceCount,maxDevices:registration.maxDevices??row.max_devices},registration.status==="device_limit"||registration.status==="device_revoked"?403:400);
+    return json({valid:true,status:"active",subscriptionId:row.id,expiresAt:new Date(row.expires_at).toISOString(),serverTime:new Date().toISOString(),deviceCount:registration.deviceCount,maxDevices:registration.maxDevices,deviceLimitsEnforced:true});
   }
 
   if (!path.startsWith("/admin/")) return json({ error: "Not found" }, 404);
@@ -372,16 +445,17 @@ async function handle(request: Request, env: Env): Promise<Response> {
     if (!body) return json({ error: "Expected a JSON object" }, 400);
     const customerLabel = cleanLabel(body.customerLabel);
     const expiresAt = expiryFromBody(body, Date.now());
-    if (!customerLabel || expiresAt === null) {
-      return json({ error: "Provide customerLabel and either durationDays (1-3650) or a future expiresAt date" }, 400);
+    const deviceLimit = maxDevices(body.maxDevices);
+    if (!customerLabel || expiresAt === null || deviceLimit === null) {
+      return json({ error: "Provide customerLabel, maxDevices (1-100), and either durationDays (1-3650) or a future expiresAt date" }, 400);
     }
 
     const rawKey = `pc_${randomHex(32)}`;
     const id = crypto.randomUUID();
     const now = Date.now();
     await env.DB.prepare(
-      "INSERT INTO subscriptions (id, key_hash, key_prefix, customer_label, status, created_at, updated_at, expires_at) VALUES (?, ?, ?, ?, 'active', ?, ?, ?)"
-    ).bind(id, await sha256Hex(rawKey), rawKey.slice(0, 11), customerLabel, now, now, expiresAt).run();
+      "INSERT INTO subscriptions (id, key_hash, key_prefix, customer_label, status, created_at, updated_at, expires_at, max_devices) VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?)"
+    ).bind(id, await sha256Hex(rawKey), rawKey.slice(0, 11), customerLabel, now, now, expiresAt, deviceLimit).run();
 
     return json({
       created: true,
@@ -391,6 +465,8 @@ async function handle(request: Request, env: Env): Promise<Response> {
         status: "active",
         createdAt: new Date(now).toISOString(),
         expiresAt: new Date(expiresAt).toISOString(),
+        maxDevices: deviceLimit,
+        registeredDevices: 0,
         subscriptionKey: rawKey,
       },
       warning: "Save this subscription key now. It cannot be retrieved later.",
@@ -401,7 +477,7 @@ async function handle(request: Request, env: Env): Promise<Response> {
     const requestedLimit = Number(url.searchParams.get("limit") ?? "50");
     const limit = Number.isInteger(requestedLimit) ? Math.min(100, Math.max(1, requestedLimit)) : 50;
     const result = await env.DB.prepare(
-      "SELECT id, key_prefix, customer_label, status, created_at, updated_at, expires_at FROM subscriptions ORDER BY created_at DESC LIMIT ?"
+      "SELECT s.id, s.key_prefix, s.customer_label, s.status, s.created_at, s.updated_at, s.expires_at, s.max_devices, (SELECT COUNT(*) FROM subscription_devices d WHERE d.subscription_id = s.id AND d.revoked_at IS NULL) AS registered_devices FROM subscriptions s ORDER BY s.created_at DESC LIMIT ?"
     ).bind(limit).all<SubscriptionRow>();
     return json({
       subscriptions: (result.results ?? []).map((row) => ({
@@ -412,8 +488,27 @@ async function handle(request: Request, env: Env): Promise<Response> {
         createdAt: new Date(row.created_at).toISOString(),
         updatedAt: new Date(row.updated_at).toISOString(),
         expiresAt: new Date(row.expires_at).toISOString(),
+        maxDevices: row.max_devices,
+        registeredDevices: Number((row as SubscriptionRow & { registered_devices?: number }).registered_devices ?? 0),
       })),
     });
+  }
+
+  const devicesMatch = path.match(/^\\/admin\\/subscriptions\\/([0-9a-f-]{36})\\/devices$/i);
+  if (request.method === "GET" && devicesMatch) {
+    const subscriptionId = devicesMatch[1];
+    const sub = await env.DB.prepare("SELECT id,max_devices FROM subscriptions WHERE id=? LIMIT 1").bind(subscriptionId).first<{id:string;max_devices:number}>();
+    if (!sub) return json({error:"Subscription not found"},404);
+    const result = await env.DB.prepare("SELECT id,public_key_hash,created_at,last_seen_at,revoked_at FROM subscription_devices WHERE subscription_id=? ORDER BY created_at ASC").bind(subscriptionId).all<DeviceRow>();
+    const devices=result.results??[];
+    return json({maxDevices:sub.max_devices,registeredDevices:devices.filter(d=>d.revoked_at===null).length,devices:devices.map(d=>({id:d.id,fingerprint:d.public_key_hash.slice(0,12),createdAt:new Date(d.created_at).toISOString(),lastSeenAt:new Date(d.last_seen_at).toISOString(),revoked:d.revoked_at!==null,revokedAt:d.revoked_at===null?null:new Date(d.revoked_at).toISOString()}))});
+  }
+
+  const deleteDeviceMatch = path.match(/^\\/admin\\/subscriptions\\/([0-9a-f-]{36})\\/devices\\/([0-9a-f-]{36})$/i);
+  if (request.method === "DELETE" && deleteDeviceMatch) {
+    const result=await env.DB.prepare("UPDATE subscription_devices SET revoked_at=? WHERE id=? AND subscription_id=? AND revoked_at IS NULL").bind(Date.now(),deleteDeviceMatch[2],deleteDeviceMatch[1]).run();
+    if(!result.meta.changes)return json({error:"Active device not found"},404);
+    return json({removed:true,deviceId:deleteDeviceMatch[2],freedSlot:true});
   }
 
   const renewMatch = path.match(/^\/admin\/subscriptions\/([0-9a-f-]{36})\/renew$/i);
