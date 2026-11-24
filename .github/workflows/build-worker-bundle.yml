@@ -1,6 +1,9 @@
 name: Build Worker bundle
 
 on:
+  push:
+    branches:
+      - feature/device-registration-limits-2026-11-24
   workflow_dispatch:
 
 permissions:
