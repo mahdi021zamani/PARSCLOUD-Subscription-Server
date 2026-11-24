@@ -377,9 +377,9 @@ async function registerDevice(env:Env,subscriptionId:string,publicKey:string,cha
   const device=await env.DB.prepare("SELECT id,public_key_hash,created_at,last_seen_at,revoked_at FROM subscription_devices WHERE subscription_id=? AND public_key_hash=? LIMIT 1").bind(subscriptionId,publicKeyHash).first<DeviceRow>();
   const sub=await env.DB.prepare("SELECT max_devices FROM subscriptions WHERE id=? LIMIT 1").bind(subscriptionId).first<{max_devices:number}>();
   const max=sub?.max_devices??1;
-  if(device&&device.revoked_at!==null)return{ok:false,status:"device_revoked",deviceCount:0,maxDevices:max};
   const countRow=await env.DB.prepare("SELECT COUNT(*) AS count FROM subscription_devices WHERE subscription_id=? AND revoked_at IS NULL").bind(subscriptionId).first<{count:number}>();
   const count=countRow?.count??0;
+  if(device&&device.revoked_at!==null)return{ok:false,status:"device_revoked",deviceCount:count,maxDevices:max};
   if(device)return{ok:true,deviceCount:count,maxDevices:max};
   if(count>=max)return{ok:false,status:"device_limit",deviceCount:count,maxDevices:max};
   return{ok:false,status:"device_registration_failed",deviceCount:count,maxDevices:max};
@@ -508,7 +508,9 @@ async function handle(request: Request, env: Env): Promise<Response> {
   if (request.method === "DELETE" && deleteDeviceMatch) {
     const result=await env.DB.prepare("UPDATE subscription_devices SET revoked_at=? WHERE id=? AND subscription_id=? AND revoked_at IS NULL").bind(Date.now(),deleteDeviceMatch[2],deleteDeviceMatch[1]).run();
     if(!result.meta.changes)return json({error:"Active device not found"},404);
-    return json({removed:true,deviceId:deleteDeviceMatch[2],freedSlot:true});
+    const stats=await env.DB.prepare("SELECT s.max_devices,(SELECT COUNT(*) FROM subscription_devices d WHERE d.subscription_id=s.id AND d.revoked_at IS NULL) AS registered_devices FROM subscriptions s WHERE s.id=? LIMIT 1")
+      .bind(deleteDeviceMatch[1]).first<{max_devices:number;registered_devices:number}>();
+    return json({removed:true,deviceId:deleteDeviceMatch[2],maxDevices:stats?.max_devices??0,registeredDevices:stats?.registered_devices??0,newDevicesAllowed:Math.max(0,(stats?.max_devices??0)-(stats?.registered_devices??0))});
   }
   const deviceLimitMatch = path.match(/^\/admin\/subscriptions\/([0-9a-f-]{36})\/device-limit$/i);
   if (request.method === "POST" && deviceLimitMatch) {
