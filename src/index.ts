@@ -299,7 +299,7 @@ async function proxyAetherGithubFeed(
       return json({ error: "Aether GitHub file size is invalid" }, 502);
     }
     const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
-    body = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    body = new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(bytes);
   } catch {
     return json({ error: "Aether GitHub file encoding is invalid" }, 502);
   }
