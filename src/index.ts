@@ -34,7 +34,7 @@ const json = (data: unknown, status = 200): Response =>
 function withCors(response: Response): Response {
   const headers = new Headers(response.headers);
   headers.set("access-control-allow-origin", "*");
-  headers.set("access-control-allow-methods", "GET, POST, OPTIONS");
+  headers.set("access-control-allow-methods", "GET, POST, DELETE, OPTIONS");
   headers.set("access-control-allow-headers", "Content-Type, Authorization");
   headers.set("access-control-max-age", "86400");
   return new Response(response.body, {
