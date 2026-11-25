@@ -13,5 +13,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Check integration harness syntax
+        run: node --check tests/device_limits_local_integration.mjs
       - name: Migration smoke tests (fresh and pre-migration D1)
         run: python3 tests/migrations_smoke.py
