@@ -1,0 +1,15 @@
+# LOCAL-ONLY TEST CONFIGURATION.
+# This deliberately uses a separate Worker name and fake D1 ID.
+# Do not deploy this config. It is for local Wrangler development only.
+name = "parscloud-subscription-server-device-test-local"
+main = "src/index.ts"
+compatibility_date = "2026-10-22"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "parscloud-device-limits-local-test"
+database_id = "00000000-0000-0000-0000-000000000000"
+migrations_dir = "migrations"
+
+[vars]
+DEVICE_LIMITS_ENFORCED = "false"
