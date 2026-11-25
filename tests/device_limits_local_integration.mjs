@@ -3,7 +3,7 @@
  * End-to-end test against a LOCAL Worker only.
  * Required env: LOCAL_WORKER_URL (default http://127.0.0.1:8787), LOCAL_ADMIN_TOKEN.
  */
-import { generateKeyPairSync, sign } from "node:crypto";
+import { generateKeyPairSync, sign, createHash } from "node:crypto";
 
 const base = (process.env.LOCAL_WORKER_URL || "http://127.0.0.1:8787").replace(/\/$/, "");
 const adminToken = process.env.LOCAL_ADMIN_TOKEN;
@@ -104,7 +104,7 @@ assert(result.status === 200 && result.data.valid, "existing Device C remains va
 result = await register(two.subscriptionKey, deviceE);
 assert(result.status === 403 && result.data.status === "device_limit", "new Device E is denied while usage exceeds lowered cap");
 list = await admin(`/admin/subscriptions/${two.id}/devices`);
-const activeD = list.data.devices.find(d => !d.revoked && d.fingerprint === deviceD.publicKey.slice(0, 12));
+const fingerprintD = createHash("sha256").update(deviceD.publicKey).digest("hex").slice(0, 12);\nconst activeD = list.data.devices.find(d => !d.revoked && d.fingerprint === fingerprintD);\nassert(Boolean(activeD), "Device D found by its SHA-256 fingerprint in admin list");
 const deleteD = await admin(`/admin/subscriptions/${two.id}/devices/${activeD?.id}`, "DELETE");
 assert(deleteD.status === 200 && deleteD.data.registeredDevices === 1, "revoking one of two existing devices frees one slot");
 result = await register(two.subscriptionKey, deviceE);
