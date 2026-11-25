@@ -84,6 +84,7 @@ assert(result.status === 403 && result.data.status === "device_limit", "second i
 let list = await admin(`/admin/subscriptions/${one.id}/devices`);
 assert(list.status === 200 && list.data.registeredDevices === 1, "admin reports 1 active registration");
 const activeA = list.data.devices.find(d => !d.revoked);
+assert(Boolean(activeA), "Device A listed by admin");
 const deleted = await admin(`/admin/subscriptions/${one.id}/devices/${activeA.id}`, "DELETE");
 assert(deleted.status === 200 && deleted.data.registeredDevices === 0, "admin revokes Device A and frees its slot");
 result = await register(one.subscriptionKey, deviceB);
@@ -104,7 +105,8 @@ assert(result.status === 200 && result.data.valid, "existing Device C remains va
 result = await register(two.subscriptionKey, deviceE);
 assert(result.status === 403 && result.data.status === "device_limit", "new Device E is denied while usage exceeds lowered cap");
 list = await admin(`/admin/subscriptions/${two.id}/devices`);
-const fingerprintD = createHash("sha256").update(deviceD.publicKey).digest("hex").slice(0, 12);\nconst activeD = list.data.devices.find(d => !d.revoked && d.fingerprint === fingerprintD);\nassert(Boolean(activeD), "Device D found by its SHA-256 fingerprint in admin list");
+const fingerprintD = createHash("sha256").update(deviceD.publicKey).digest("hex").slice(0, 12);
+const activeD = list.data.devices.find(d => !d.revoked && d.fingerprint === fingerprintD);\nassert(Boolean(activeD), "Device D found by its SHA-256 fingerprint in admin list");
 const deleteD = await admin(`/admin/subscriptions/${two.id}/devices/${activeD?.id}`, "DELETE");
 assert(deleteD.status === 200 && deleteD.data.registeredDevices === 1, "revoking one of two existing devices frees one slot");
 result = await register(two.subscriptionKey, deviceE);
