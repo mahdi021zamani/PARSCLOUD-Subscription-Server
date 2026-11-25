@@ -24,7 +24,7 @@ The Android app currently points to the deployed Worker URL, so do not use the r
 Test API manually using a local HTTP client:
 - Create a test subscription with `POST /admin/subscriptions`, JSON `{ "customerLabel": "LOCAL TEST", "durationDays": 1, "maxDevices": 1 }`, and the local admin bearer token.
 - Check `GET /admin/subscriptions` shows 0/1 devices.
-- Device challenge/registration tests require the Android client or a test harness with an ECDSA P-256 key pair and challenge signing. Exercise these once a local-test APK is prepared.
+- Run the automated API/device proof test using the local-only token: `LOCAL_ADMIN_TOKEN='your-local-token' node tests/device_limits_local_integration.mjs`. It creates temporary one-day local subscriptions and exercises registration, repeat validation, cap denial, admin revocation, slot reuse, and lowering the cap below current usage.\n- This harness uses generated P-256 keys and must only target the local Worker.
 - Check the admin device-list, revoke, and capacity endpoints with seeded test records only.
 - Confirm the public GitHub feeds remain outside device-registration validation; app imports them directly from GitHub, not through this Worker.
 
