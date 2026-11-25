@@ -1,0 +1,23 @@
+name: Worker checks
+
+on:
+  push:
+    branches:
+      - feature/device-registration-limits-2026-11-24
+  pull_request:
+    branches:
+      - feature/device-registration-limits-2026-11-24
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm install
+      - run: npm run typecheck
+      - name: Migration smoke tests (fresh and pre-migration D1)
+        run: python3 tests/migrations_smoke.py
