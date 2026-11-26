@@ -1,0 +1,17 @@
+# STAGING TEMPLATE ONLY — never bind to Production D1.
+# Replace database_id with the ID of a NEW staging D1 database.
+# Deploy only after reviewing the final binding and environment in Cloudflare.
+
+name = "parscloud-device-limits-staging"
+main = "src/index.ts"
+compatibility_date = "2026-10-22"
+workers_dev = true
+
+[[d1_databases]]
+binding = "DB"
+database_name = "parscloud-device-limits-staging"
+database_id = "REPLACE_WITH_NEW_STAGING_D1_DATABASE_ID"
+migrations_dir = "migrations"
+
+[vars]
+DEVICE_LIMITS_ENFORCED = "true"
