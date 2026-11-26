@@ -1,4 +1,4 @@
-name: Worker migration checks
+name: Worker migration and device-limit checks
 
 on:
   push:
@@ -9,11 +9,41 @@ on:
       - feature/device-registration-limits-2026-11-24
 
 jobs:
-  migrations:
+  local-tests:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install Worker dependencies
+        run: npm install
+      - name: TypeScript check
+        run: npm run typecheck
+      - name: Build Worker bundle
+        run: npx wrangler deploy --dry-run --config wrangler.test.toml
+      - name: Migration smoke tests (fresh and legacy database)
+        run: python3 tests/migrations_smoke.py
       - name: Check integration harness syntax
         run: node --check tests/device_limits_local_integration.mjs
-      - name: Migration smoke tests (fresh and pre-migration D1)
-        run: python3 tests/migrations_smoke.py
+      - name: Apply migrations to isolated local D1
+        run: npx wrangler d1 migrations apply parscloud-device-limits-local-test --local --config wrangler.test.toml
+      - name: Start local Worker (isolated D1 only)
+        run: |
+          printf 'ADMIN_TOKEN=ci-only-device-limit-token-never-used-in-production-1234567890\n' > .dev.vars
+          npx wrangler dev --local --config wrangler.test.toml --port 8787 > /tmp/wrangler.log 2>&1 &
+          echo $! > /tmp/wrangler.pid
+          for attempt in $(seq 1 40); do
+            if curl --fail --silent http://127.0.0.1:8787/health >/dev/null; then
+              echo 'Local Worker is ready.'
+              exit 0
+            fi
+            sleep 2
+          done
+          cat /tmp/wrangler.log
+          exit 1
+      - name: End-to-end device registration tests
+        env:
+          LOCAL_WORKER_URL: http://127.0.0.1:8787
+          LOCAL_ADMIN_TOKEN: ci-only-device-limit-token-never-used-in-production-1234567890
+        run: node tests/device_limits_local_integration.mjs
