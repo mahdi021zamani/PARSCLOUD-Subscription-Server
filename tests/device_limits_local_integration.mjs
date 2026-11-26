@@ -109,8 +109,15 @@ const fingerprintD = createHash("sha256").update(deviceD.publicKey).digest("hex"
 const activeD = list.data.devices.find(d => !d.revoked && d.fingerprint === fingerprintD);
 assert(Boolean(activeD), "Device D found by its SHA-256 fingerprint in admin list");
 const deleteD = await admin(`/admin/subscriptions/${two.id}/devices/${activeD?.id}`, "DELETE");
-assert(deleteD.status === 200 && deleteD.data.registeredDevices === 1, "revoking one of two existing devices frees one slot");
+assert(deleteD.status === 200 && deleteD.data.registeredDevices === 1, "revoking Device D leaves usage at the lowered cap");
 result = await register(two.subscriptionKey, deviceE);
-assert(result.status === 200 && result.data.valid && result.data.deviceCount === 2, "Device E registers once usage falls below the lowered cap");
+assert(result.status === 403 && result.data.status === "device_limit", "one remaining device still occupies the lowered cap");
+const fingerprintC = createHash("sha256").update(deviceC.publicKey).digest("hex").slice(0, 12);
+const activeC = list.data.devices.find(d => !d.revoked && d.fingerprint === fingerprintC);
+assert(Boolean(activeC), "Device C found by its SHA-256 fingerprint in admin list");
+const deleteC = await admin("/admin/subscriptions/" + two.id + "/devices/" + activeC?.id, "DELETE");
+assert(deleteC.status === 200 && deleteC.data.registeredDevices === 0, "revoking Device C brings usage below the lowered cap");
+result = await register(two.subscriptionKey, deviceE);
+assert(result.status === 200 && result.data.valid && result.data.deviceCount === 1, "Device E registers after usage drops below the lowered cap");
 
 console.log("\nAll local device-limit integration checks passed. No production resources were accessed.");
