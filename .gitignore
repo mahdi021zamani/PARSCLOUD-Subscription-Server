@@ -7,3 +7,6 @@ node_modules/
 dist/
 coverage/
 .DS_Store
+
+# Local Cloudflare staging config contains account-specific D1 ID.
+wrangler.staging.toml
