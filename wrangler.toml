@@ -1,16 +1,17 @@
-# EXPERIMENTAL DEVICE-LIMITS BRANCH — LOCAL ONLY.
-# Deliberately isolated from the production Worker and D1.
-# Do not deploy this configuration. Use local Wrangler development only.
+# STAGING ONLY — isolated Worker and D1 database.
+# This branch is dedicated to the Cloudflare staging deployment.
+# Never change this binding to Production or deploy from another branch.
 
-name = "parscloud-subscription-server-device-limits-local"
+name = "parscloud-device-limits-staging"
 main = "src/index.ts"
 compatibility_date = "2026-10-22"
+workers_dev = true
 
 [[d1_databases]]
 binding = "DB"
-database_name = "parscloud-device-limits-local-test"
-database_id = "00000000-0000-0000-0000-000000000000"
+database_name = "parscloud-device-limits-staging"
+database_id = "7811e712-1ea4-409b-b44e-ea6a3c78f14c"
 migrations_dir = "migrations"
 
 [vars]
-DEVICE_LIMITS_ENFORCED = "false"
+DEVICE_LIMITS_ENFORCED = "true"
